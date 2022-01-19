@@ -7,6 +7,7 @@
 module Futhark.AD.Rev.Reduce
   ( diffReduce,
     diffMinMaxReduce,
+    diffMult,
   )
 where
 
@@ -189,32 +190,32 @@ diffReduce ops pat_adj n as red = do
       mkLet [Ident r t] $ BasicOp $ Index r_arr $ addFixIdx2FullSlice idx t
 --
 -- previous buggy version is unreachable now
-diffReduce ops pat_adj w as red = do
-  red' <- renameRed red
-  flip_red <- renameRed =<< flipReduce red
-  ls <- scanExc "ls" (redToScan red') as
-  rs <-
-    mapM eReverse
-      =<< scanExc "ls" (redToScan flip_red)
-      =<< mapM eReverse as
+-- diffReduce ops pat_adj w as red = do
+--   red' <- renameRed red
+--   flip_red <- renameRed =<< flipReduce red
+--   ls <- scanExc "ls" (redToScan red') as
+--   rs <-
+--     mapM eReverse
+--       =<< scanExc "ls" (redToScan flip_red)
+--       =<< mapM eReverse as
 
-  (as_params, f) <- mkF $ redLambda red
+--   (as_params, f) <- mkF $ redLambda red
 
-  f_adj <- vjpLambda ops (map adjFromVar pat_adj) as_params f
+--   f_adj <- vjpLambda ops (map adjFromVar pat_adj) as_params f
 
-  as_adj <- letTupExp "adjs" $ Op $ Screma w (ls ++ as ++ rs) (mapSOAC f_adj)
+--   as_adj <- letTupExp "adjs" $ Op $ Screma w (ls ++ as ++ rs) (mapSOAC f_adj)
 
-  zipWithM_ updateAdj as as_adj
-  where
-    renameRed (Reduce comm lam nes) =
-      Reduce comm <$> renameLambda lam <*> pure nes
+--   zipWithM_ updateAdj as as_adj
+--   where
+--     renameRed (Reduce comm lam nes) =
+--       Reduce comm <$> renameLambda lam <*> pure nes
 
-    redToScan :: Reduce SOACS -> Scan SOACS
-    redToScan (Reduce _ lam nes) = Scan lam nes
-    flipReduce (Reduce comm lam nes) = do
-      lam' <- renameLambda lam {lambdaParams = flipParams $ lambdaParams lam}
-      pure $ Reduce comm lam' nes
-    flipParams ps = uncurry (flip (++)) $ splitAt (length ps `div` 2) ps
+--     redToScan :: Reduce SOACS -> Scan SOACS
+--     redToScan (Reduce _ lam nes) = Scan lam nes
+--     flipReduce (Reduce comm lam nes) = do
+--       lam' <- renameLambda lam {lambdaParams = flipParams $ lambdaParams lam}
+--       pure $ Reduce comm lam' nes
+--     flipParams ps = uncurry (flip (++)) $ splitAt (length ps `div` 2) ps
 
 --
 -- Special case of reduce with min/max:
@@ -277,3 +278,164 @@ diffMinMaxReduce _ops x aux w minmax ne as m = do
     letSubExp "minmax_in_bounds" . BasicOp $
       CmpOp (CmpSlt Int64) (intConst Int64 0) w
   updateAdjIndex as (CheckBounds (Just in_bounds), Var x_ind) (Var x_adj)
+
+onePrim :: PrimType -> PrimValue
+onePrim (IntType it) = IntValue $ intValue it (1 :: Int)
+onePrim (FloatType ft) = FloatValue $ floatValue ft (1 :: Double)
+onePrim Bool = BoolValue True
+onePrim Unit = UnitValue
+
+constructAddBinOp :: PrimType -> BinOp
+constructAddBinOp (IntType it) = Add it OverflowUndef
+constructAddBinOp (FloatType ft) = FAdd ft
+constructAddBinOp t = error $ "constructAddBinOp: " ++ pretty t
+
+constructMultBinOp :: PrimType -> BinOp
+constructMultBinOp (IntType it) = Mul it OverflowUndef
+constructMultBinOp (FloatType ft) = FMul ft
+constructMultBinOp t = error $ "constructMultBinOp: " ++ pretty t
+
+constructDivBinOp :: PrimType -> BinOp
+constructDivBinOp (IntType it) = SDiv it Unsafe
+constructDivBinOp (FloatType ft) = FDiv ft
+constructDivBinOp t = error $ "constructDivBinOp: " ++ pretty t
+
+-- CODE EXAMPLE:
+-- let x = reduce (*) (ne) [a1, a2, ..., ai, ..., a_n-1]
+-- FORWARD TRACE:
+--   pnz = map (\a -> if a==0 then 1 else a) as
+--         |> reduce (*) ne
+--   nzero = map (\a -> if a==0 then 1 else 0) as
+--           |> reduce (+) 0
+--    x = if nzero == 0 then pnz else 0
+-- REVERSE TRACE:
+--    as_contribs = map(\a -> if nzero == 0 then x/a * x_contribs
+--                            else if nzero==1 then if a==0 then pnz * x_contribs
+--                                                          else 0
+--                            else 0) as
+diffMult :: VjpOps -> VName -> SubExp -> BinOp -> SubExp -> VName -> ADM () -> ADM ()
+diffMult _ops x w red ne as m = do
+    let t = binOpType red
+    --let typeZero = blankPrimValue t
+    --let typeOne  = onePrim t
+    --let addOp  = constructAddBinOp t
+    --let multOp = constructMultBinOp t
+    --let divOp  = constructDivBinOp t
+    
+    a <- newParam "a" $ Prim t
+    
+    pnz_map_lambda <-
+      mkLambda [a] $ do
+        vnm <- letExp "a_map"
+          =<< eIf
+            (eCmpOp (CmpEq t) (eParam a) (eSubExp (intConst Int64 0)))
+            (eBody [(eSubExp ne)])
+            (eBody [(eParam a)])
+        
+        return $ [varRes vnm]
+
+    -- map (\a -> if a==0 then 1 else a) as
+    pnz_map <- letExp "pnz_map" $
+      Op $ Screma w [as] (mapSOAC pnz_map_lambda)
+
+    acc_a <- newParam "acc_a" $ Prim t
+    a_i <- newParam "a_i" $ Prim t
+    pnz_red_lambda <-
+      mkLambda [acc_a, a_i] $ do
+        vnm <- letExp "a_red"
+          =<<
+            eBinOp
+            (Mul Int64 OverflowUndef)
+            (eParam acc_a) (eParam a_i)
+        return $ [varRes vnm]
+    
+    pnz_red_form <-
+      reduceSOAC [Reduce Commutative pnz_red_lambda [ne]]
+
+    pnz <- letExp "pnz" $ Op $ Screma w [pnz_map] pnz_red_form
+
+    b <- newParam "b" $ Prim t
+    nzero_map_lambda <-
+      mkLambda [b] $ do
+        vnm <- letExp "b_map"
+          =<< eIf
+            (
+              eCmpOp
+                (CmpEq t) (eParam b) (eSubExp (intConst Int64 0))
+            )
+            (eBody [eSubExp (intConst Int64 1)])
+            (eBody [eSubExp (intConst Int64 0)])
+        return $ [varRes vnm]
+
+    nzero_map <- letExp "nzero_map" $ Op $ Screma w [as] (mapSOAC nzero_map_lambda)
+
+    acc_b <- newParam "acc_b" $ Prim t
+    b_i <- newParam "b_i" $ Prim t
+    nzero_red_lambda <-
+      mkLambda [acc_b, b_i] $ do
+        vnm <- letExp "b_red"
+          =<< eBinOp (Add Int64 OverflowUndef) (eParam acc_b) (eParam b_i)
+        return $ [varRes vnm]
+    
+    nzero_red_form <-
+      reduceSOAC [Reduce Commutative nzero_red_lambda [intConst Int64 0]]
+      
+    nzero <- letExp "nzero" $ Op $ Screma w [nzero_map] nzero_red_form
+
+    has_zero_exp <-
+      eIf
+      (
+        eCmpOp (CmpEq t) (eSubExp (Var nzero)) (eSubExp (intConst Int64 0))
+      )
+      (eBody [eSubExp (Var pnz)])
+      (eBody [eSubExp (intConst Int64 0)])
+
+    letBindNames [x] has_zero_exp
+    
+    m
+
+    c <- newParam "c" $ Prim t
+    x_adj <- lookupAdjVal x
+    as_contribs_lambda <-
+      mkLambda [c] $ do
+        vnm <- letExp "c_res"
+          =<< eIf  -- if nzero == 0
+            (
+              eCmpOp
+                (CmpEq t) (eSubExp (Var nzero)) (eSubExp (intConst Int64 0))
+            )
+            (eBody  -- x/a * x_contribs
+              [
+                eBinOp (Mul Int64 OverflowUndef)
+                  (eBinOp (SDiv Int64 Unsafe) (eSubExp (Var x)) (eParam c))
+                  (eSubExp (Var x_adj))
+              ]
+            )
+            (eBody
+              [
+                eIf -- else if nzero == 1
+                  (eCmpOp
+                      (CmpEq t) (eSubExp (Var nzero)) (eSubExp (intConst Int64 1)))
+                  (
+                    eBody
+                      [
+                        eIf -- if a == 0
+                          (
+                          eCmpOp
+                            (CmpEq t) (eParam c) (eSubExp (intConst Int64 0))
+                          )
+                          (eBody [ -- pnz * x_contribs
+                            eBinOp (Mul Int64 OverflowUndef)
+                            (eSubExp (Var pnz)) (eSubExp (Var x_adj))
+                            ])
+                          (eBody [eSubExp (intConst Int64 0)])
+                      ]
+                  )
+                  (eBody [eSubExp (intConst Int64 0)])
+              ]
+            )
+        return [varRes vnm]
+
+    x_contribs <- letExp "x_contribs" $ Op $ Screma w [as] (mapSOAC as_contribs_lambda)
+
+    updateAdj as x_contribs
