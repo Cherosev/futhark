@@ -285,10 +285,10 @@ onePrim (FloatType ft) = FloatValue $ floatValue ft (1 :: Double)
 onePrim Bool = BoolValue True
 onePrim Unit = UnitValue
 
-constructAddBinOp :: PrimType -> BinOp
-constructAddBinOp (IntType it) = Add it OverflowUndef
-constructAddBinOp (FloatType ft) = FAdd ft
-constructAddBinOp t = error $ "constructAddBinOp: " ++ pretty t
+-- constructAddBinOp :: PrimType -> BinOp
+-- constructAddBinOp (IntType it) = Add it OverflowUndef
+-- constructAddBinOp (FloatType ft) = FAdd ft
+-- constructAddBinOp t = error $ "constructAddBinOp: " ++ pretty t
 
 constructMultBinOp :: PrimType -> BinOp
 constructMultBinOp (IntType it) = Mul it OverflowUndef
@@ -316,11 +316,11 @@ constructDivBinOp t = error $ "constructDivBinOp: " ++ pretty t
 diffMult :: VjpOps -> VName -> SubExp -> BinOp -> SubExp -> VName -> ADM () -> ADM ()
 diffMult _ops x w red ne as m = do
     let t = binOpType red
-    --let typeZero = blankPrimValue t
+    let typeZero = blankPrimValue t
     --let typeOne  = onePrim t
     --let addOp  = constructAddBinOp t
-    --let multOp = constructMultBinOp t
-    --let divOp  = constructDivBinOp t
+    let multOp = constructMultBinOp t
+    let divOp  = constructDivBinOp t
     
     a <- newParam "a" $ Prim t
     
@@ -328,7 +328,7 @@ diffMult _ops x w red ne as m = do
       mkLambda [a] $ do
         vnm <- letExp "a_map"
           =<< eIf
-            (eCmpOp (CmpEq t) (eParam a) (eSubExp (intConst Int64 0)))
+            (eCmpOp (CmpEq t) (eParam a) (eSubExp (Constant typeZero)))
             (eBody [(eSubExp ne)])
             (eBody [(eParam a)])
         
@@ -345,7 +345,7 @@ diffMult _ops x w red ne as m = do
         vnm <- letExp "a_red"
           =<<
             eBinOp
-            (Mul Int64 OverflowUndef)
+            (multOp)
             (eParam acc_a) (eParam a_i)
         return $ [varRes vnm]
     
@@ -361,7 +361,7 @@ diffMult _ops x w red ne as m = do
           =<< eIf
             (
               eCmpOp
-                (CmpEq t) (eParam b) (eSubExp (intConst Int64 0))
+                (CmpEq t) (eParam b) (eSubExp (Constant typeZero))
             )
             (eBody [eSubExp (intConst Int64 1)])
             (eBody [eSubExp (intConst Int64 0)])
@@ -388,7 +388,7 @@ diffMult _ops x w red ne as m = do
         eCmpOp (CmpEq t) (eSubExp (Var nzero)) (eSubExp (intConst Int64 0))
       )
       (eBody [eSubExp (Var pnz)])
-      (eBody [eSubExp (intConst Int64 0)])
+      (eBody [eSubExp (Constant typeZero)])
 
     letBindNames [x] has_zero_exp
     
@@ -406,8 +406,8 @@ diffMult _ops x w red ne as m = do
             )
             (eBody  -- x/a * x_contribs
               [
-                eBinOp (Mul Int64 OverflowUndef)
-                  (eBinOp (SDiv Int64 Unsafe) (eSubExp (Var x)) (eParam c))
+                eBinOp (multOp)
+                  (eBinOp (divOp) (eSubExp (Var x)) (eParam c))
                   (eSubExp (Var x_adj))
               ]
             )
@@ -422,16 +422,16 @@ diffMult _ops x w red ne as m = do
                         eIf -- if a == 0
                           (
                           eCmpOp
-                            (CmpEq t) (eParam c) (eSubExp (intConst Int64 0))
+                            (CmpEq t) (eParam c) (eSubExp (Constant typeZero))
                           )
                           (eBody [ -- pnz * x_contribs
-                            eBinOp (Mul Int64 OverflowUndef)
+                            eBinOp (multOp)
                             (eSubExp (Var pnz)) (eSubExp (Var x_adj))
                             ])
-                          (eBody [eSubExp (intConst Int64 0)])
+                          (eBody [eSubExp (constant typeZero)])
                       ]
                   )
-                  (eBody [eSubExp (intConst Int64 0)])
+                  (eBody [eSubExp (constant typeZero)])
               ]
             )
         return [varRes vnm]
