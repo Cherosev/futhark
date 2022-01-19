@@ -46,6 +46,13 @@ commonSOAC pat aux soac m = do
 
 vjpSOAC :: VjpOps -> Pat Type -> StmAux () -> SOAC SOACS -> ADM () -> ADM ()
 vjpSOAC ops pat aux soac@(Screma w as form) m
+  | Just [red] <- isReduceSOAC form,
+    [x] <- patNames pat,
+    [ne] <- redNeutral red,
+    [a] <- as,
+    Just [(op, _, _, _)] <-lamIsBinOp $ redLambda red,
+    isMult op =
+    diffMult ops x w op ne a m
   | Just reds <- isReduceSOAC form,
     length reds > 1 =
       splitScanRed ops (reduceSOAC, redNeutral) (pat, aux, reds, w, as) m
@@ -67,6 +74,9 @@ vjpSOAC ops pat aux soac@(Screma w as form) m
     isMinMaxOp (UMax _) = True
     isMinMaxOp (FMax _) = True
     isMinMaxOp _ = False
+    isMult Mul {} = True
+    isMult FMul {} = True
+    isMult _ = False
 vjpSOAC ops pat aux soac@(Screma w as form) m
   | Just scans <- isScanSOAC form,
     length scans > 1 =
