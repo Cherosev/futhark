@@ -1,9 +1,11 @@
--- Simple reduce with multiplication
 -- ==
--- entry: fwd_J rev_J
--- compiled input { [1i64, 2i64, 3i64, 4i64] 1i64} output { [24i64, 12i64, 8i64, 6i64] 24i64 }
--- compiled input { [1i64, 2i64, 0i64, 4i64] 1i64} output { [0i64, 0i64, 8i64, 0i64] 0i64 }
--- compiled input { [1i64, 0i64, 0i64, 4i64] 1i64} output { [0i64, 0i64, 0i64, 0i64] 0i64 }
+-- entry: rev_J
+-- random input { [1000]i64 i64 }
+-- random input { [10000]i64 i64 }
+-- random input { [100000]i64 i64 }
+-- random input { [1000000]i64 i64 }
+-- random input { [10000000]i64 i64 }
+-- random input { [100000000]i64 i64 }
 
 def red_mult [n] (xs: [n]i64, c: i64) : i64 =
   reduce (*) 1 xs * c

@@ -377,8 +377,8 @@ diffMult _ops x w red ne as m = do
 
     nzero_map <- letExp "nzero_map" $ Op $ Screma w [as] (mapSOAC nzero_map_lambda)
 
-    acc_b <- newParam "acc_b" $ Prim t
-    b_i <- newParam "b_i" $ Prim t
+    acc_b <- newParam "acc_b" $ Prim int64
+    b_i <- newParam "b_i" $ Prim int64
     nzero_red_lambda <-
       mkLambda [acc_b, b_i] $ do
         vnm <- letExp "b_red"
@@ -393,7 +393,7 @@ diffMult _ops x w red ne as m = do
     has_zero_exp <-
       eIf
       (
-        eCmpOp (CmpEq t) (eSubExp (Var nzero)) (eSubExp (intConst Int64 0))
+        eCmpOp (CmpEq int64) (eSubExp (Var nzero)) (eSubExp (intConst Int64 0))
       )
       (eBody [eSubExp (Var pnz)])
       (eBody [eSubExp (Constant typeZero)])
@@ -410,7 +410,7 @@ diffMult _ops x w red ne as m = do
           =<< eIf  -- if nzero == 0
             (
               eCmpOp
-                (CmpEq t) (eSubExp (Var nzero)) (eSubExp (intConst Int64 0))
+                (CmpEq int64) (eSubExp (Var nzero)) (eSubExp (intConst Int64 0))
             )
             (eBody  -- x/a * x_contribs
               [
@@ -423,7 +423,7 @@ diffMult _ops x w red ne as m = do
               [
                 eIf -- else if nzero == 1
                   (eCmpOp
-                      (CmpEq t) (eSubExp (Var nzero)) (eSubExp (intConst Int64 1)))
+                      (CmpEq int64) (eSubExp (Var nzero)) (eSubExp (intConst Int64 1)))
                   (
                     eBody
                       [
