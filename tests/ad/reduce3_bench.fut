@@ -14,15 +14,15 @@
 -- random input { [50000000]i64 i64 }
 -- random input { [100000000]i64 i64 }
 
-def red_mult [n] (xs: [n]i64, c: i64) : i64 =
+def red_mult [n] (xs: [n]f32, c: f32) : f32 =
   reduce (*) 1 xs * c
 
-entry fwd_J [n] (xs: [n]i64) (c: i64) = 
+entry fwd_J [n] (xs: [n]f32) (c: f32) = 
     let arrayAdjs = tabulate (n+1) (\i -> 
                             jvp red_mult (xs, c)
-                            (tabulate n ((==i) >-> i64.bool),
-                            if i == n then 1 else 0))
+                            (tabulate n ((==i) >-> f32.bool),
+                            if i == n then 1.0 else 0.0))
     in (arrayAdjs[:n], arrayAdjs[n])
 
-entry rev_J [n] (xs: [n]i64) (c: i64) = 
-    vjp red_mult (xs, c) 1
+entry rev_J [n] (xs: [n]f32) (c: f32) = 
+    vjp red_mult (xs, c) 1.0
