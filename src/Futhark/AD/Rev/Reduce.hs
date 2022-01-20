@@ -287,11 +287,11 @@ diffMinMaxReduce _ops x aux w minmax ne as m = do
       CmpOp (CmpSlt Int64) (intConst Int64 0) w
   updateAdjIndex as (CheckBounds (Just in_bounds), Var x_ind) (Var x_adj)
 
-onePrim :: PrimType -> PrimValue
-onePrim (IntType it) = IntValue $ intValue it (1 :: Int)
-onePrim (FloatType ft) = FloatValue $ floatValue ft (1 :: Double)
-onePrim Bool = BoolValue True
-onePrim Unit = UnitValue
+-- onePrim :: PrimType -> PrimValue
+-- onePrim (IntType it) = IntValue $ intValue it (1 :: Int)
+-- onePrim (FloatType ft) = FloatValue $ floatValue ft (1 :: Double)
+-- onePrim Bool = BoolValue True
+-- onePrim Unit = UnitValue
 
 -- constructAddBinOp :: PrimType -> BinOp
 -- constructAddBinOp (IntType it) = Add it OverflowUndef
@@ -325,8 +325,6 @@ diffMult :: VjpOps -> VName -> SubExp -> BinOp -> SubExp -> VName -> ADM () -> A
 diffMult _ops x w red ne as m = do
     let t = binOpType red
     let typeZero = blankPrimValue t
-    --let typeOne  = onePrim t
-    --let addOp  = constructAddBinOp t
     let multOp = constructMultBinOp t
     let divOp  = constructDivBinOp t
     
