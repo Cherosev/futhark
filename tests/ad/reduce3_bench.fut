@@ -1,18 +1,18 @@
 -- ==
 -- entry: rev_J
--- random input { [100]i64 i64 }
--- random input { [500]i64 i64 }
--- random input { [1000]i64 i64 }
--- random input { [5000]i64 i64 }
--- random input { [10000]i64 i64 }
--- random input { [50000]i64 i64 }
--- random input { [100000]i64 i64 }
--- random input { [500000]i64 i64 }
--- random input { [1000000]i64 i64 }
--- random input { [5000000]i64 i64 }
--- random input { [10000000]i64 i64 }
--- random input { [50000000]i64 i64 }
--- random input { [100000000]i64 i64 }
+-- random input { [100]f32 f32 }
+-- random input { [500]f32 f32 }
+-- random input { [1000]f32 f32 }
+-- random input { [5000]f32 f32 }
+-- random input { [10000]f32 f32 }
+-- random input { [50000]f32 f32 }
+-- random input { [100000]f32 f32 }
+-- random input { [500000]f32 f32 }
+-- random input { [1000000]f32 f32 }
+-- random input { [5000000]f32 f32 }
+-- random input { [10000000]f32 f32 }
+-- random input { [50000000]f32 f32 }
+-- random input { [100000000]f32 f32 }
 
 def red_mult [n] (xs: [n]f32, c: f32) : f32 =
   reduce (*) 1 xs * c
