@@ -279,17 +279,6 @@ diffMinMaxReduce _ops x aux w minmax ne as m = do
       CmpOp (CmpSlt Int64) (intConst Int64 0) w
   updateAdjIndex as (CheckBounds (Just in_bounds), Var x_ind) (Var x_adj)
 
--- onePrim :: PrimType -> PrimValue
--- onePrim (IntType it) = IntValue $ intValue it (1 :: Int)
--- onePrim (FloatType ft) = FloatValue $ floatValue ft (1 :: Double)
--- onePrim Bool = BoolValue True
--- onePrim Unit = UnitValue
-
--- constructAddBinOp :: PrimType -> BinOp
--- constructAddBinOp (IntType it) = Add it OverflowUndef
--- constructAddBinOp (FloatType ft) = FAdd ft
--- constructAddBinOp t = error $ "constructAddBinOp: " ++ pretty t
-
 constructMultBinOp :: PrimType -> BinOp
 constructMultBinOp (IntType it) = Mul it OverflowUndef
 constructMultBinOp (FloatType ft) = FMul ft
@@ -301,10 +290,10 @@ constructDivBinOp (FloatType ft) = FDiv ft
 constructDivBinOp t = error $ "constructDivBinOp: " ++ pretty t
 
 -- CODE EXAMPLE:
--- let x = reduce (*) (ne) [a1, a2, ..., ai, ..., a_n-1]
+-- let x = reduce (*) 1 [a1, a2, ..., ai, ..., a_n-1]
 -- FORWARD TRACE:
 --   pnz = map (\a -> if a==0 then 1 else a) as
---         |> reduce (*) ne
+--         |> reduce (*) 1
 --   nzero = map (\a -> if a==0 then 1 else 0) as
 --           |> reduce (+) 0
 --    x = if nzero == 0 then pnz else 0
@@ -332,7 +321,6 @@ diffMult _ops x w red ne as m = do
         
         return $ [varRes vnm]
 
-    -- map (\a -> if a==0 then 1 else a) as
     pnz_map <- letExp "pnz_map" $
       Op $ Screma w [as] (mapSOAC pnz_map_lambda)
 
