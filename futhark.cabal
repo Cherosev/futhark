@@ -62,6 +62,7 @@ library
       Futhark.AD.Rev.Map
       Futhark.AD.Rev.Monad
       Futhark.AD.Rev.Reduce
+      Futhark.AD.Rev.Reduce_by_index
       Futhark.AD.Rev.Scan
       Futhark.AD.Rev.Scatter
       Futhark.AD.Rev.SOAC
