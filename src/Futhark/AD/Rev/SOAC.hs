@@ -10,6 +10,7 @@ import Control.Monad
 import Futhark.AD.Rev.Map
 import Futhark.AD.Rev.Monad
 import Futhark.AD.Rev.Reduce
+import Futhark.AD.Rev.Reduce_by_index
 import Futhark.AD.Rev.Scan
 import Futhark.AD.Rev.Scatter
 import Futhark.Analysis.PrimExp.Convert
@@ -45,6 +46,10 @@ commonSOAC pat aux soac m = do
   returnSweepCode $ mapM lookupAdj $ patNames pat
 
 vjpSOAC :: VjpOps -> Pat Type -> StmAux () -> SOAC SOACS -> ADM () -> ADM ()
+vjpSOAC :: VjpOps -> Pat -> StmAux () -> SOAC SOACS -> ADM () -> ADM ()
+vjpSOAC ops pat aux (Hist len args hist_op bucket_fun) m  = -- Histogram Case
+  diffHist ops pat aux (Hist len args hist_op bucket_fun) m
+
 vjpSOAC ops pat aux soac@(Screma w as form) m
   | Just [red] <- isReduceSOAC form,
     [x] <- patNames pat,
@@ -52,7 +57,7 @@ vjpSOAC ops pat aux soac@(Screma w as form) m
     [a] <- as,
     Just [(op, _, _, _)] <-lamIsBinOp $ redLambda red,
     isMult op =
-    diffMult ops x w op ne a m
+    diffMultReduce ops x w op ne a m
   | Just reds <- isReduceSOAC form,
     length reds > 1 =
       splitScanRed ops (reduceSOAC, redNeutral) (pat, aux, reds, w, as) m

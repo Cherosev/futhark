@@ -7,7 +7,7 @@
 module Futhark.AD.Rev.Reduce
   ( diffReduce,
     diffMinMaxReduce,
-    diffMult,
+    diffMultReduce,
   )
 where
 
@@ -310,8 +310,8 @@ constructDivBinOp t = error $ "constructDivBinOp: " ++ pretty t
 --                            else if nzero==1 then if a==0 then pnz * x_contribs
 --                                                          else 0
 --                            else 0) as
-diffMult :: VjpOps -> VName -> SubExp -> BinOp -> SubExp -> VName -> ADM () -> ADM ()
-diffMult _ops x w red ne as m = do
+diffMultReduce :: VjpOps -> VName -> SubExp -> BinOp -> SubExp -> VName -> ADM () -> ADM ()
+diffMultReduce _ops x w red ne as m = do
     let t = binOpType red
     let typeZero = blankPrimValue t
     let multOp = constructMultBinOp t
@@ -433,3 +433,5 @@ diffMult _ops x w red ne as m = do
     x_contribs <- letExp "x_contribs" $ Op $ Screma w [as] (mapSOAC as_contribs_lambda)
 
     updateAdj as x_contribs
+
+
