@@ -267,6 +267,38 @@ helperMulOp3 ptp bop nz_prod zr_count fa_orig prod_bar = do
     getBinOpDiv (FMul t) = FDiv t
     getBinOpDiv _ = error "In Reduce_by_index.hs, getBinOpDiv, unreachable case reached!"
 
+mkSegScanExc :: Lambda -> SubExp -> SubExp -> VName -> VName -> ADM (SOAC SOACS) 
+mkSegScanExc lam ne n vals flags = do
+  let Just [(op, _, _, _)] = lamIsBinOp lam
+  let t = binOpType op
+  v1 <- newParam "v1" $ Prim t
+  v2 <- newParam "v2" $ Prim t
+  f1 <- newParam "f1" $ Prim int64
+  f2 <- newParam "f2" $ Prim int64
+  let params = [v1,v2,f1,f2]
+  
+  scan_body <- runBodyBuilder . localScope (scopeOfLParams params) $ do
+    -- flag = f1 || f2
+    flag <- letSubExp "flag" $ BasicOp $ BinOp (Or Int64 ) (Var $ paramName f1) (Var $ paramName f2)
+    value <- letSubExp "value" $ BasicOp $ BinOp op (Var $ paramName v1) (Var $ paramName v2)
+    -- value = if f2 then ne else (lam v1 v2) 
+    let f2_check =
+          eCmpOp
+            (CmpEq $ IntType Int64)
+            (eSubExp $ Var $ paramName f2)
+            (eSubExp $ intConst Int64 0)
+    eBody
+      [
+        eIf
+          f2_check
+          (resultBodyM $ [ne, flag])
+          (resultBodyM $ [value, flag])
+      ]
+  let scan_lambda = Lambda params scan_body [Prim t, Prim int64]
+  scan_soac <- scanSOAC [Scan scan_lambda [ne, intConst Int64 0]]
+  return $ Screma n [vals, flags] scan_soac
+
+
 diffHist :: VjpOps -> Pat -> StmAux() -> SOAC SOACS -> ADM () -> ADM ()
 -- Special case (+)
 diffHist _vjops pat aux soac m
@@ -484,6 +516,85 @@ diffHist _vjops (Pat [pe]) aux soac m
         r <- letSubExp "r" $ BasicOp $ BinOp addop (Var a) (Var b)
         resultBodyM [r]
       return $ Lambda pab lam_bdy [Prim int64]
+
+-- General case
+diffHist vjops (Pat [pe]) aux soac m
+  | (Hist n [inds, vs] hist_op bucket_fun) <- soac,
+    True <- isIdentityLambda bucket_fun,
+    [HistOp shape rf [orig_dst] [ne] f] <- hist_op,
+    [eltp] <- lambdaReturnType f,
+    Prim ptp <- eltp,
+    -- len(orig_hist)
+    [histDim] <- shapeDims shape = do
+      let int64One  = IntValue $ Int64Value 1
+      let int64Zero = IntValue $ Int64Value 0
+      let int64Neg  = IntValue $ Int64Value (-1)
+      
+      ---- (inds', iot') = Filter (inds, iot) w.r.t. inds. Remove those out of bounds of 0 - len(orig_dst)
+      
+      -- flags = map (\ind -> if 0 <= ind <= histDim then 1 else 0 inds
+      ind_param <- newParam "ind" $ Prim int64
+      pred_body <- runBodyBuilder . localScope (scopeOfLParams [ind_param]) $
+        eBody
+          [ eIf -- if 0 <= ind
+            (eCmpOp (CmpSle Int64) (eSubExp (Constant int64Zero)) (eParam ind_param) )
+            (eBody [eSubExp $ Constant int64Zero])
+            (eBody
+              [
+                eIf -- if ind > histDiam
+                (eCmpOp (CmpSlt Int64) (eSubExp histDim) (eParam ind_param) )
+                (eBody [eSubExp $ Constant int64Zero])
+                (eBody [eSubExp $ Constant int64One])
+              ])
+          
+          ]
+      let pred_lambda = Lambda [ind_param] pred_body [Prim int64]
+      flags <- letExp "flags" $ Op $ Screma n [inds] $ ScremaForm [][] pred_lambda
+
+      -- flag_scanned = scan (+) 0 flags
+      add_lambda_i64 <- addLambda (Prim int64)
+      scan_soac <- scanSOAC [Scan add_lambda_i64 [intConst Int64 0]]
+      flags_scanned <- letExp "flag_scanned" $ Op $ Screma n [flags] scan_soac
+
+      -- n' = last flags_scanned
+      lastElem <- letSubExp "lastElem" $ BasicOp $ BinOp (Sub Int64 OverflowUndef) n (Constant int64One)
+      n' <- letSubExp "n'" $ BasicOp $ Index flags_scanned (fullSlice (Prim int64) [DimFix lastElem])
+    
+      -- new_inds = map (\(flag, flag_scan) -> if flag == 1 then flag_scan - 1 else -1)
+      flag <- newParam "flag" $ Prim int64
+      flag_scan <- newParam "flag_scan" $ Prim int64
+      new_inds_body <- runBodyBuilder . localScope (scopeOfLParams [flag, flag_scan]) $
+        eBody
+        [ eIf -- if flag == 1
+          (eCmpOp (CmpEq int64) (eParam flag) (eSubExp (Constant int64One)))
+          (eBody [eBinOp (Sub Int64 OverflowUndef) (eSubExp $ Var $ paramName flag_scan) (eSubExp $ Constant int64One)])
+          (eBody [eSubExp $ Constant int64Neg])
+        ]
+      let new_inds_lambda = Lambda [flag, flag_scan] new_inds_body [Prim int64, Prim int64]
+      new_inds <- letExp "new_inds" $ Op $ Screma n' [flags, flags_scanned] $ ScremaForm [][] new_inds_lambda
+          
+      -- indexes = scatter (Scratch int n') new_inds (iota n)     
+      f'' <- mkIdentityLambda [Prim int64, Prim int64]
+      orig_indexes <- letExp "orig_indexes" $ BasicOp $ Iota n (intConst Int64 0) (intConst Int64 1) Int64
+      dst <- letExp "dst" $ BasicOp $ Scratch int64 [n']
+      indexes <- letExp "inds_fixed" $ Op $ Scatter n [new_inds, orig_indexes]    f'' [(Shape [n'], 1, dst)]
+
+      -- new_bins = map (\i -> bins[i]) indexes
+      i <- newParam "i" $ Prim int64
+      new_bins_body <- runBodyBuilder . localScope (scopeOfLParams [i]) $ do
+        body <- letSubExp "body" $ BasicOp $ Index inds (fullSlice (Prim int64) [DimFix (Var (paramName i))])     
+        resultBodyM [body]
+      let new_bins_lambda = Lambda [i] new_bins_body [Prim int64]
+      new_bins <- letExp "new_bins" $ Op $ Screma n' [indexes] $ ScremaForm [][] new_bins_lambda
+
+
+      -- Radix sort (inds', iot') w.r.t. inds.
+      
+      
+      -- Make flag array
+      -- Forward segmented exlusive scan in one array, reverse segmented exlusive scan in another.
+      updateAdj vs flags_scanned
+
 
 diffHist _ _ _ soac _ =
   error $ "Unsuported histogram: " ++ pretty soac
