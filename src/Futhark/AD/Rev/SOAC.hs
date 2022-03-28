@@ -47,8 +47,19 @@ commonSOAC pat aux soac m = do
 
 vjpSOAC :: VjpOps -> Pat Type -> StmAux () -> SOAC SOACS -> ADM () -> ADM ()
 vjpSOAC :: VjpOps -> Pat -> StmAux () -> SOAC SOACS -> ADM () -> ADM ()
-vjpSOAC ops pat aux (Hist len args hist_op bucket_fun) m  = -- Histogram Case
-  diffHist ops pat aux (Hist len args hist_op bucket_fun) m
+-- Histogram Case
+vjpSOAC ops pat aux (Hist len args hist_op bucket_fun) m 
+  | not $ isIdentityLambda bucket_fun = do
+    f' <- mkIdentityLambda $ lambdaReturnType bucket_fun
+    (args', stmts) <- runBuilderT' . localScope (scopeOfLParams []) $ do
+      letTupExp "input" $ Op $ Screma len args (mapSOAC bucket_fun)
+    let stmt = head $ stmsToList stmts
+    let newHist = Let pat aux $ Op $ Hist len args' hist_op f'
+    vjpStm ops stmt $ vjpStm ops newHist m
+
+vjpSOAC ops pat aux hist@(Hist _ _ _ bucket_fun) m
+ | isIdentityLambda bucket_fun = do
+    diffHist ops pat aux hist m
 
 vjpSOAC ops pat aux soac@(Screma w as form) m
   | Just [red] <- isReduceSOAC form,
