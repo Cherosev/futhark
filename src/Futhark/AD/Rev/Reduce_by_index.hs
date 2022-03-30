@@ -267,21 +267,24 @@ helperMulOp3 ptp bop nz_prod zr_count fa_orig prod_bar = do
     getBinOpDiv (FMul t) = FDiv t
     getBinOpDiv _ = error "In Reduce_by_index.hs, getBinOpDiv, unreachable case reached!"
 
+-- Lift a lambda to produce an exlusive segmented scan operator.
 mkSegScanExc :: Lambda -> SubExp -> SubExp -> VName -> VName -> ADM (SOAC SOACS) 
 mkSegScanExc lam ne n vals flags = do
-  let Just [(op, _, _, _)] = lamIsBinOp lam
-  let t = binOpType op
-  v1 <- newParam "v1" $ Prim t
-  v2 <- newParam "v2" $ Prim t
+  -- Get lambda return type
+  let rt = lambdaReturnType lam
+  v1 <- mapM (newParam "v1") rt
+  v2 <- mapM (newParam "v2") rt
   f1 <- newParam "f1" $ Prim int64
   f2 <- newParam "f2" $ Prim int64
-  let params = [v1,v2,f1,f2]
+  let params = f1 : f2 : (v1 ++ v2)
+  let oneSubExp = Constant $ IntValue $ intValue Int64 1
   
   scan_body <- runBodyBuilder . localScope (scopeOfLParams params) $ do
-    -- flag = f1 || f2
-    flag <- letSubExp "flag" $ BasicOp $ BinOp (Or Int64 ) (Var $ paramName f1) (Var $ paramName f2)
-    value <- letSubExp "value" $ BasicOp $ BinOp op (Var $ paramName v1) (Var $ paramName v2)
-    -- value = if f2 then ne else (lam v1 v2) 
+    -- f = f1 || f2
+    f <- letSubExp "f" $ BasicOp $ BinOp (Or Int64 ) (Var $ paramName f1) (Var $ paramName f2)
+    v <- letSubExp "v" $ Op $
+      Screma (intConst Int64 1) (map paramName $ v1++v2) (mapSOAC lam)
+    -- v = if f2 then ne else (lam v1 v2) 
     let f2_check =
           eCmpOp
             (CmpEq $ IntType Int64)
@@ -291,13 +294,157 @@ mkSegScanExc lam ne n vals flags = do
       [
         eIf
           f2_check
-          (resultBodyM $ [ne, flag])
-          (resultBodyM $ [value, flag])
+          (resultBodyM $ [f, ne])
+          (resultBodyM $ [f, v])
       ]
-  let scan_lambda = Lambda params scan_body [Prim t, Prim int64]
+  let scan_lambda = Lambda params scan_body (rt ++ [Prim int64])
   scan_soac <- scanSOAC [Scan scan_lambda [ne, intConst Int64 0]]
   return $ Screma n [vals, flags] scan_soac
 
+-- partion2Maker - Takes flag array and values and creates a scatter SOAC
+--                  which corresponds to the partition2 of the inputs
+-- partition2Maker size flags values = 
+partition2Maker ::  SubExp -> VName -> VName -> ADM (SOAC SOACS)
+partition2Maker n bits xs = do
+  
+  let bitType = int64
+  ptp <- lookupType xs
+  let zeroSubExp = Constant $ IntValue $ intValue Int64 0
+  let oneSubExp = Constant $ IntValue $ intValue Int64 1
+  let minusOneSubExp = Constant $ IntValue $ intValue Int64 1
+
+  -- let bits_inv = map (\b -> 1 - b) bits
+  bit_x <- newParam "bit_x" $ Prim bitType
+  bits_inv_map_bdy <- runBodyBuilder . localScope (scopeOfLParams [bit_x]) $ do
+    eBody
+      [
+        eBinOp (Sub Int64 OverflowUndef)
+        (eSubExp $ Constant $ IntValue $ intValue Int64 1)
+        (eParam bit_x)
+      ]
+  let bits_inv_map_lam = Lambda [bit_x] bits_inv_map_bdy [Prim bitType]
+  bits_inv <- letExp "bits_inv" $ Op $ Screma n [bits] (ScremaForm [] [] bits_inv_map_lam)
+
+  -- let ps0 = scan (+) 0 (bits_inv)
+    -- * Generalize this part so we can use it twice without geting "bound twice" error
+  ps0_x <- newParam "ps0_x" $ Prim bitType
+  ps0_y <- newParam "ps0_y" $ Prim bitType
+  ps0_scanlam_bdy <- runBodyBuilder . localScope (scopeOfLParams [ps0_x, ps0_y]) $ do
+    eBody
+      [
+        eBinOp (Add Int64 OverflowUndef)
+        (eParam ps0_x)
+        (eParam ps0_y)
+      ]
+  let ps0_scanlam = Lambda [ps0_x, ps0_y] ps0_scanlam_bdy [Prim bitType]
+  let ps0_scan = Scan ps0_scanlam [Constant $ IntValue $ intValue Int64 0]
+    -- *
+  f' <- mkIdentityLambda [Prim bitType]
+  ps0 <- letExp "ps0" $ Op $ Screma n [bits_inv] (ScremaForm [ps0_scan] [] f')
+
+  -- let ps0_clean = map2 (*) bits_inv ps0 
+  ps0clean_bitinv <- newParam "ps0clean_bitinv" $ Prim bitType
+  ps0clean_ps0 <- newParam "ps0clean_ps0" $ Prim bitType
+  ps0clean_lam_bdy <- runBodyBuilder . localScope (scopeOfLParams [ps0clean_bitinv, ps0clean_ps0]) $ do
+    eBody
+      [
+        eBinOp (Mul Int64 OverflowUndef)
+        (eParam ps0clean_bitinv)
+        (eParam ps0clean_ps0)
+      ]
+  let ps0clean_lam = Lambda [ps0clean_bitinv, ps0clean_ps0] ps0clean_lam_bdy [Prim bitType]
+  ps0clean <- letExp "ps0_clean" $ Op $ Screma n [bits_inv, ps0] (ScremaForm [] [] ps0clean_lam)
+
+  -- let ps1 = scan (+) 0 bits
+    -- * Generalize this part so we can use it twice without geting "bound twice" error
+  ps1_x <- newParam "ps1_x" $ Prim bitType
+  ps1_y <- newParam "ps1_y" $ Prim bitType
+  ps1_scanlam_bdy <- runBodyBuilder . localScope (scopeOfLParams [ps1_x, ps1_y]) $ do
+    eBody
+      [
+        eBinOp (Add Int64 OverflowUndef)
+        (eParam ps1_x)
+        (eParam ps1_y)
+      ]
+  let ps1_scanlam = Lambda [ps1_x, ps1_y] ps1_scanlam_bdy [Prim bitType]
+  let ps1_scan = Scan ps1_scanlam [Constant $ IntValue $ intValue Int64 0]
+    -- *
+  f'' <- mkIdentityLambda [Prim bitType]
+  ps1 <- letExp "ps1" $ Op $ Screma n [bits] (ScremaForm [ps1_scan] [] f'')
+
+
+  -- let ps0_offset = reduce (+) 0 bits_inv
+    -- * Generalize this part so we can use it twice without geting "bound twice" error
+  ps0off_x <- newParam "ps0off_x" $ Prim bitType
+  ps0off_y <- newParam "ps0off_y" $ Prim bitType
+  ps0off_redlam_bdy <- runBodyBuilder . localScope (scopeOfLParams [ps0off_x, ps0off_y]) $ do
+    eBody
+      [
+        eBinOp (Add Int64 OverflowUndef)
+        (eParam ps0off_x)
+        (eParam ps0off_y)
+      ]
+  let ps0off_redlam = Lambda [ps0off_x, ps0off_y] ps0off_redlam_bdy [Prim bitType]
+    -- *
+  ps0off_red <- reduceSOAC [Reduce Commutative ps0off_redlam [intConst Int64 0]]
+  ps0off <- letExp "ps0off" $ Op $ Screma n [bits_inv] ps0off_red
+
+
+  -- let ps1_clean = map (+ps0_offset) ps1
+  ps1clean_x <- newParam "ps1clean_x" $ Prim bitType
+  ps1clean_lam_bdy <- runBodyBuilder . localScope (scopeOfLParams [ps1clean_x]) $ do
+    eBody
+      [
+        eBinOp (Add Int64 OverflowUndef)
+        (eParam ps1clean_x)
+        (eSubExp $ Var ps0off)
+      ]
+  let ps1clean_lam = Lambda [ps1clean_x] ps1clean_lam_bdy [Prim bitType]
+  ps1clean <- letExp "ps1clean" $ Op $ Screma n [ps1] (ScremaForm [] [] ps1clean_lam)
+
+  -- let ps0_clean = map2 (*) bits_inv ps0 
+  ps1clean'_bit <- newParam "ps1cleanprim_bit" $ Prim bitType
+  ps1clean'_ps1clean <- newParam "ps1cleanprim_ps1clean" $ Prim bitType
+  ps1clean'_lam_bdy <- runBodyBuilder . localScope (scopeOfLParams [ps1clean'_bit, ps1clean'_ps1clean]) $ do
+    eBody
+      [
+        eBinOp (Mul Int64 OverflowUndef)
+        (eParam ps1clean'_bit)
+        (eParam ps1clean'_ps1clean)
+      ]
+  let ps1clean'_lam = Lambda [ps1clean'_bit, ps1clean'_ps1clean] ps1clean'_lam_bdy [Prim bitType]
+  ps1clean' <- letExp "ps1_cleanprim" $ Op $ Screma n [bits, ps1clean] (ScremaForm [] [] ps1clean'_lam)
+
+  -- let ps = map2 (+) ps0_clean ps1_clean'
+  ps_ps0clean <- newParam "ps_ps0clean" $ Prim bitType
+  ps_ps1clean' <- newParam "ps_ps1cleanprim" $ Prim bitType
+  ps_lam_bdy <- runBodyBuilder . localScope (scopeOfLParams [ps_ps0clean, ps_ps1clean']) $ do
+    eBody
+      [
+        eBinOp (Mul Int64 OverflowUndef)
+        (eParam ps_ps0clean)
+        (eParam ps_ps1clean')
+      ]
+  let ps_lam = Lambda [ps_ps0clean, ps_ps1clean'] ps_lam_bdy [Prim bitType]
+  ps <- letExp "ps" $ Op $ Screma n [ps0clean, ps1clean'] (ScremaForm [] [] ps_lam)
+
+
+  -- let ps_actual = map (-1) ps
+  psactual_x <- newParam "psactual_x" $ Prim bitType
+  psactual_lam_bdy <- runBodyBuilder . localScope (scopeOfLParams [psactual_x]) $ do
+    eBody
+      [
+        eBinOp (Sub Int64 OverflowUndef)
+        (eParam psactual_x)
+        (eSubExp $ minusOneSubExp)
+      ]
+  let psactual_lam = Lambda [psactual_x] psactual_lam_bdy [Prim bitType]
+  psactual <- letExp "psactual" $ Op $ Screma n [ps] (ScremaForm [] [] psactual_lam)
+  
+  -- let scatter_inds = scatter inds ps_actual inds
+  f''' <- mkIdentityLambda [Prim int64, Prim int64]
+  xs_cpy <- letExp (baseString xs ++ "_copy") $ BasicOp $ Copy xs
+  return $ Scatter n [psactual, xs] f''' [(Shape [n], 1, xs_cpy)]
 
 diffHist :: VjpOps -> Pat -> StmAux() -> SOAC SOACS -> ADM () -> ADM ()
 -- Special case (+)
@@ -518,7 +665,7 @@ diffHist _vjops (Pat [pe]) aux soac m
       return $ Lambda pab lam_bdy [Prim int64]
 
 -- General case
-diffHist vjops (Pat [pe]) aux soac m
+diffHist vjops pat@(Pat [pe]) aux soac m
   | (Hist n [inds, vs] hist_op bucket_fun) <- soac,
     True <- isIdentityLambda bucket_fun,
     [HistOp shape rf [orig_dst] [ne] f] <- hist_op,
@@ -558,26 +705,27 @@ diffHist vjops (Pat [pe]) aux soac m
 
       -- n' = last flags_scanned
       lastElem <- letSubExp "lastElem" $ BasicOp $ BinOp (Sub Int64 OverflowUndef) n (Constant int64One)
-      n' <- letSubExp "n'" $ BasicOp $ Index flags_scanned (fullSlice (Prim int64) [DimFix lastElem])
+      n' <- letSubExp "new_length" $ BasicOp $ Index flags_scanned (fullSlice (Prim int64) [DimFix lastElem])
     
       -- new_inds = map (\(flag, flag_scan) -> if flag == 1 then flag_scan - 1 else -1)
       flag <- newParam "flag" $ Prim int64
       flag_scan <- newParam "flag_scan" $ Prim int64
       new_inds_body <- runBodyBuilder . localScope (scopeOfLParams [flag, flag_scan]) $
+        
         eBody
         [ eIf -- if flag == 1
           (eCmpOp (CmpEq int64) (eParam flag) (eSubExp (Constant int64One)))
           (eBody [eBinOp (Sub Int64 OverflowUndef) (eSubExp $ Var $ paramName flag_scan) (eSubExp $ Constant int64One)])
           (eBody [eSubExp $ Constant int64Neg])
         ]
-      let new_inds_lambda = Lambda [flag, flag_scan] new_inds_body [Prim int64, Prim int64]
-      new_inds <- letExp "new_inds" $ Op $ Screma n' [flags, flags_scanned] $ ScremaForm [][] new_inds_lambda
+      let new_inds_lambda = Lambda [flag, flag_scan] new_inds_body [Prim int64]
+      new_inds <- letExp "new_inds" $ Op $ Screma n [flags, flags_scanned] $ ScremaForm [][] new_inds_lambda
           
-      -- indexes = scatter (Scratch int n') new_inds (iota n)     
+      -- new_indexes = scatter (Scratch int n') new_inds (iota n)     
       f'' <- mkIdentityLambda [Prim int64, Prim int64]
       orig_indexes <- letExp "orig_indexes" $ BasicOp $ Iota n (intConst Int64 0) (intConst Int64 1) Int64
-      dst <- letExp "dst" $ BasicOp $ Scratch int64 [n']
-      indexes <- letExp "inds_fixed" $ Op $ Scatter n [new_inds, orig_indexes]    f'' [(Shape [n'], 1, dst)]
+      indexes_dst <- letExp "indexes_dst" $ BasicOp $ Scratch int64 [n']
+      new_indexes <- letExp "new_indexes" $ Op $ Scatter n [new_inds, orig_indexes] f'' [(Shape [n'], 1, indexes_dst)]
 
       -- new_bins = map (\i -> bins[i]) indexes
       i <- newParam "i" $ Prim int64
@@ -585,15 +733,53 @@ diffHist vjops (Pat [pe]) aux soac m
         body <- letSubExp "body" $ BasicOp $ Index inds (fullSlice (Prim int64) [DimFix (Var (paramName i))])     
         resultBodyM [body]
       let new_bins_lambda = Lambda [i] new_bins_body [Prim int64]
-      new_bins <- letExp "new_bins" $ Op $ Screma n' [indexes] $ ScremaForm [][] new_bins_lambda
+      new_bins <- letExp "new_bins" $ Op $ Screma n' [new_indexes] $ ScremaForm [][] new_bins_lambda
+
+      
+      ---- Radix sort (new_bins, new_indexes) w.r.t. new_bins.
+      -- TODO: Need to loop over several bits
+      -- bits = map (\bin -> (bin >> digit_n) & 1) new_bins
+      bin <- newParam "bin" $ Prim int64
+      digit_n <- letSubExp "zero_digit" $ zeroExp $ Prim int64 -- placeholder
+      bits_map_bdy <- runBodyBuilder . localScope (scopeOfLParams [bin]) $
+        eBody
+        [
+          eBinOp (And Int64)
+            (eBinOp (LShr Int64) (eParam bin) (toExp digit_n))
+            (eSubExp $ Constant $ IntValue $ intValue Int64 1)
+        ]
+      let bits_map_lam = Lambda [bin] bits_map_bdy [Prim int64]
+      bits <- letExp "bits" $ Op $ Screma n' [new_bins] (ScremaForm [] [] bits_map_lam)
+
+      -- Sort indexes based on bits (flag array)
+      scatter_soac <- partition2Maker n' bits new_indexes 
+      scatter_is <- letExp (baseString new_indexes ++ "_scattered") $ Op $ scatter_soac
 
 
-      -- Radix sort (inds', iot') w.r.t. inds.
-      
-      
+      -- Collect sorted values
+      -- new_vals = map(\i -> vs[i]) scatter_is
+      val_idx <- newParam "val_idx" $ Prim int64
+      new_vals_body <- runBodyBuilder . localScope (scopeOfLParams [val_idx]) $ do
+        body <- letSubExp "body" $ BasicOp $ Index vs (fullSlice (Prim int64) [DimFix (Var (paramName val_idx))])     
+        resultBodyM [body]
+      let new_vals_lambda = Lambda [val_idx] new_vals_body [Prim int64]
+      new_vals <- letExp "new_vals" $ Op $ Screma n' [new_indexes] $ ScremaForm [][] new_vals_lambda
+
       -- Make flag array
+
+     
+
       -- Forward segmented exlusive scan in one array, reverse segmented exlusive scan in another.
-      updateAdj vs flags_scanned
+      seg_scan_exc <- mkSegScanExc f ne n' new_vals scatter_is
+      fwd_scan <- letTupExp "fwd_scan" $ Op seg_scan_exc
+      let [_, res] = fwd_scan
+     
+      -- Garbage to make the program compile
+      let zeroSubExp = Constant $ int64Zero
+      addStm $ Let pat aux $ BasicOp $ Index res $ fullSlice (Prim int64) [DimSlice zeroSubExp histDim (constant (1 :: Int64))]
+      m
+      
+      insAdj orig_dst res
 
 
 diffHist _ _ _ soac _ =
