@@ -10,6 +10,7 @@ where
 
 import Control.Monad
 import Futhark.AD.Rev.Monad
+import Futhark.AD.Rev.Map
 import Futhark.Analysis.PrimExp.Convert
 import Futhark.Builder
 import Futhark.IR.SOACS
@@ -277,11 +278,11 @@ helperMulOp3 ptp bop nz_prod zr_count fa_orig prod_bar = do
     getBinOpDiv (FMul t) = FDiv t
     getBinOpDiv _ = error "In Reduce_by_index.hs, getBinOpDiv, unreachable case reached!"
 
-
+-- tmp = map (\(i,f) -> if f then (ne, f) else (vals[i-1], f)) (iota n) (flags)
 -- scan (\(v1,f1) (v2,f2) ->
 --            let f = f1 || f2
---            let v = if f2 then ne else op v1 v2
---            in (v, f))
+--            let v = if f2 then v2 else op v1 v2
+--            in (v, f)) tmp flags
 
 -- Lift a lambda to produce an exlusive segmented scan operator.
 mkSegScanExc :: Lambda -> [SubExp] -> SubExp -> VName -> VName -> ADM (SOAC SOACS) 
@@ -291,39 +292,74 @@ mkSegScanExc lam ne n vals flags = do
   -- v <- mapM (newParam "v") rt
   v1 <- mapM (newParam "v1") rt
   v2 <- mapM (newParam "v2") rt
+  f <- newParam "f" $ Prim int8
   f1 <- newParam "f1" $ Prim int8
   f2 <- newParam "f2" $ Prim int8
   let params = (f1 : v1) ++ (f2 : v2)
 
+  iota_n <- letExp "iota_n" $ BasicOp $ Iota n (intConst Int64 0) (intConst Int64 1) Int64
+  i <- newParam "i" $ Prim int64
+
+  -- (\(flag, i) -> if f then (f, ne) else (f, vals[i-1]))
+
+  tmp_lam_body <- runBodyBuilder . localScope (scopeOfLParams [f, i]) $ do
+    idx_minus_one <- letSubExp "idx_minus_one" $ BasicOp $ BinOp (Sub Int64 OverflowUndef) (Var $ paramName i) (intConst Int64 1)
+    prev_elem <- letTupExp "prev_elem" $ BasicOp $ Index vals (fullSlice (Prim int64) [DimFix idx_minus_one])
+    
+    let f_check =
+          eCmpOp
+            (CmpEq $ IntType Int8)
+            (eSubExp $ Var $ paramName f)
+            (eSubExp $ intConst Int8 1)
+
+    eBody
+      [
+        eIf
+          f_check
+          (resultBodyM $ (Var $ paramName f) : ne )
+          (resultBodyM $ ((Var . paramName) f) : (map Var prev_elem))
+      ]
+
+  let tmp_lam = Lambda [f, i] tmp_lam_body (Prim int8 : rt)
   lam' <- renameLambda lam
-  -- let lam_body = lambdaBody lam'
-
-
+  
   scan_body <- runBodyBuilder . localScope (scopeOfLParams params) $ do
     -- f = f1 || f2
     f <- letSubExp "f" $ BasicOp $ BinOp (Or Int8 ) (Var $ paramName f1) (Var $ paramName f2)
-    -- v = if f2 then ne else (lam v1 v2)     
-    lam_body2 <- mkLambda (v1++v2) $ do
+    -- v = if f2 then v2 else (lam v1 v2)     
+    op_body <- mkLambda (v1++v2) $ do
       eLambda lam' (map (eSubExp . Var . paramName) (v1++v2))
 
-    f_check <- letExp "f_check" $ BasicOp $ CmpOp (CmpEq $ IntType Int8) (Var $ paramName f2) (intConst Int8 0)
-    ne_body <- eBody $ map eSubExp ne
+    v2_body <- eBody $ map (eSubExp . Var . paramName) v2
 
+    f_check <- letExp "f_check" $ BasicOp $ CmpOp (CmpEq $ IntType Int8) (Var $ paramName f2) (intConst Int8 1)
 
     v <- letSubExp "v" $
           If (Var f_check)
-          ne_body
-          (lambdaBody lam_body2)
+          v2_body
+          (lambdaBody op_body)
           (IfDec (staticShapes rt) IfNormal)
     
     -- Put together
     eBody $ map eSubExp ([f, v])
-
+  
   let scan_lambda = Lambda params scan_body (Prim int8 : rt)
-  -- let map_lambda  = Lambda (v1++v2) (lambdaBody lam) rt
-  idx_lam <- mkIdentityLambda ((Prim int8) : rt)
-  -- scan_soac <- scanSOAC [Scan scan_lambda [ne, intConst Int64 0]]
-  return $ Screma n [flags, vals] $ ScremaForm [Scan scan_lambda ((intConst Int8 0) : ne)] [] idx_lam
+
+  return $ Screma n [flags, iota_n] $ ScremaForm [Scan scan_lambda ((intConst Int8 0) : ne)] [] tmp_lam
+
+mkF :: Lambda -> ADM ([VName], Lambda)
+mkF lam = do
+  lam_l <- renameLambda lam
+  lam_r <- renameLambda lam
+  let q = length $ lambdaReturnType lam
+      (lps, aps) = splitAt q $ lambdaParams lam_l
+      (ips, rps) = splitAt q $ lambdaParams lam_r
+  lam' <- mkLambda (lps <> aps <> rps) $ do
+    lam_l_res <- bodyBind $ lambdaBody lam_l
+    forM_ (zip ips lam_l_res) $ \(ip, SubExpRes cs se) ->
+      certifying cs $ letBindNames [paramName ip] $ BasicOp $ SubExp se
+    bodyBind $ lambdaBody lam_r
+  pure (map paramName aps, lam')
 
 -- partion2Maker - Takes flag array and values and creates a scatter SOAC
 --                  which corresponds to the partition2 of the inputs
@@ -508,124 +544,124 @@ diffHist _vjops (Pat [pe]) aux soac m
     insAdj vs vs_bar'
   where
     mkI64ArrType shape = arrayOf (Prim int64) shape NoUniqueness
-
-diffHist _vjops (Pat [pe]) aux soac m 
-  | (Hist n [inds, vs] hist_mul bucket_fun) <- soac,
-    True <- isIdentityLambda bucket_fun,
-    [HistOp shape rf [orig_dst] [ne] mul_lam] <- hist_mul,
-    Just mulop <- isMulLam mul_lam,
-    [eltp] <- lambdaReturnType mul_lam,
-    Prim ptp <- eltp,
-    [shapedim] <- shapeDims shape = do
-    -- starts here:
-    let pe_tp = patElemDec pe
-    (map_lam, _) <- helperMulOp1 ptp mulop
-    vs_lift <- letTupExp "nzel_zrct" $ Op $ Screma n [vs] (ScremaForm [] [] map_lam)
-    let [nz_vs, one_zrs] = vs_lift
-    zr_counts0 <- letExp "zr_cts" $ BasicOp $ Replicate shape (intConst Int64 0)
-    nz_prods0 <- letExp "nz_prd" $ BasicOp $ Replicate shape ne
-    nz_prods <- newVName "non_zero_prod"
-    zr_counts <- newVName "zero_count"
-    lam_add <- mkLamAddI64
-    let hist_zrn = HistOp shape rf [zr_counts0] [intConst Int64 0] lam_add
-    let hist_nzp = HistOp shape rf [nz_prods0] [ne] mul_lam
-    f' <- mkIdentityLambda [Prim int64, Prim int64, eltp, Prim int64]
-    let soac_pat =
-          Pat
-            [ PatElem nz_prods pe_tp,
-              PatElem zr_counts $
-              arrayOf (Prim int64) shape NoUniqueness
-            ]
-    let soac_exp = Op $ Hist n [inds, inds, nz_vs, one_zrs] [hist_nzp, hist_zrn] f'
-    auxing aux $ letBind soac_pat soac_exp
-    -- construct the histo result:
-    res_part <- newVName "res_part"
-    ps2 <- zipWithM newParam ["nz_pr", "zr_ct"] [eltp, Prim int64]
-    let [nz_prod, zr_count] = map paramName ps2
-    if_stms <- helperMulOp2 ptp nz_prod zr_count res_part
-    lam_bdy_2 <- runBodyBuilder . localScope (scopeOfLParams ps2) $ do
-      addStms if_stms
-      resultBodyM [Var res_part]
-    h_part <-
-      letExp "hist_part" $
-        Op $
-          Screma
-            shapedim
-            [nz_prods, zr_counts]
-            (ScremaForm [] [] (Lambda ps2 lam_bdy_2 [eltp]))
-    ps3 <- zipWithM newParam ["h_orig", "h_part"] [eltp, eltp]
-    let [ph_orig, ph_part] = map paramName ps3
-    lam_pe_bdy <- runBodyBuilder . localScope (scopeOfLParams ps3) $ do
-      r <- letSubExp "res" $ BasicOp $ BinOp mulop (Var ph_orig) (Var ph_part)
-      resultBodyM [r]
-    auxing aux $
-      letBind (Pat [pe]) $
-        Op $
-          Screma
-            shapedim
-            [orig_dst, h_part]
-            (ScremaForm [] [] (Lambda ps3 lam_pe_bdy [eltp]))
-    m
-    -- reverse trace
-    pe_bar <- lookupAdjVal $ patElemName pe
-    -- updates the orig_dst with its proper bar
-    mul_lam' <- renameLambda mul_lam
-    orig_bar <-
-      letTupExp (baseString orig_dst ++ "_bar") $
-        Op $
-          Screma
-            shapedim
-            [h_part, pe_bar]
-            (ScremaForm [] [] mul_lam')
-    zipWithM_ updateAdj [orig_dst] orig_bar
-    -- updates the partial histo result with its proper bar
-    mul_lam'' <- renameLambda mul_lam
-    part_bars <-
-      letTupExp (baseString h_part ++ "_bar") $
-        Op $
-          Screma
-            shapedim
-            [orig_dst, pe_bar]
-            (ScremaForm [] [] mul_lam'')
-    let [part_bar] = part_bars
-    -- add the contributions to each array element
-    pj <- newParam "j" (Prim int64)
-    pv <- newParam "v" eltp
-    let j = paramName pj
-    ((zr_cts, pr_bar, nz_prd), tmp_stms) <- runBuilderT' . localScope (scopeOfLParams [pj, pv]) $ do
-      zr_cts <- letExp "zr_cts" $ BasicOp $ Index zr_counts $ fullSlice eltp [DimFix (Var j)]
-      pr_bar <- letExp "pr_bar" $ BasicOp $ Index part_bar $ fullSlice eltp [DimFix (Var j)]
-      nz_prd <- letExp "nz_prd" $ BasicOp $ Index nz_prods $ Slice [DimFix (Var j)]
-      return (zr_cts, pr_bar, nz_prd)
-    bdy_tmp <- helperMulOp3 ptp mulop nz_prd zr_cts pv pr_bar
-    lam_bar <-
-      runBodyBuilder . localScope (scopeOfLParams [pj, pv]) $
-        eBody
-          [ eIf
-              (toExp $ withinBounds [(shapedim, j)])
-              ( do
-                  addStms (tmp_stms <> bodyStms bdy_tmp)
-                  resultBodyM (map resSubExp $ bodyResult bdy_tmp)
-              )
-              (resultBodyM [Constant $ blankPrimValue ptp])
-          ]
-    vs_bar <-
-      letTupExp (baseString vs ++ "_bar") $
-        Op $
-          Screma
-            n
-            [inds, vs]
-            (ScremaForm [] [] (Lambda [pj, pv] lam_bar [eltp]))
-    zipWithM_ updateAdj [vs] vs_bar
-  where
-    mkLamAddI64 = do
-      pab <- zipWithM newParam ["a", "b"] [Prim int64, Prim int64]
-      let [a, b] = map paramName pab
-      let addop = Add Int64 OverflowUndef
-      lam_bdy <- runBodyBuilder . localScope (scopeOfLParams pab) $ do
-        r <- letSubExp "r" $ BasicOp $ BinOp addop (Var a) (Var b)
-        resultBodyM [r]
-      return $ Lambda pab lam_bdy [Prim int64]
+--special case *
+-- diffHist vjops (Pat [pe]) aux soac m 
+--   | (Hist n [inds, vs] hist_mul bucket_fun) <- soac,
+--     True <- isIdentityLambda bucket_fun,
+--     [HistOp shape rf [orig_dst] [ne] mul_lam] <- hist_mul,
+--     Just mulop <- isMulLam mul_lam,
+--     [eltp] <- lambdaReturnType mul_lam,
+--     Prim ptp <- eltp,
+--     [shapedim] <- shapeDims shape = do
+--     -- starts here:
+--     let pe_tp = patElemDec pe
+--     (map_lam, _) <- helperMulOp1 ptp mulop
+--     vs_lift <- letTupExp "nzel_zrct" $ Op $ Screma n [vs] (ScremaForm [] [] map_lam)
+--     let [nz_vs, one_zrs] = vs_lift
+--     zr_counts0 <- letExp "zr_cts" $ BasicOp $ Replicate shape (intConst Int64 0)
+--     nz_prods0 <- letExp "nz_prd" $ BasicOp $ Replicate shape ne
+--     nz_prods <- newVName "non_zero_prod"
+--     zr_counts <- newVName "zero_count"
+--     lam_add <- mkLamAddI64
+--     let hist_zrn = HistOp shape rf [zr_counts0] [intConst Int64 0] lam_add
+--     let hist_nzp = HistOp shape rf [nz_prods0] [ne] mul_lam
+--     f' <- mkIdentityLambda [Prim int64, Prim int64, eltp, Prim int64]
+--     let soac_pat =
+--           Pat
+--             [ PatElem nz_prods pe_tp,
+--               PatElem zr_counts $
+--               arrayOf (Prim int64) shape NoUniqueness
+--             ]
+--     let soac_exp = Op $ Hist n [inds, inds, nz_vs, one_zrs] [hist_nzp, hist_zrn] f'
+--     auxing aux $ letBind soac_pat soac_exp
+--     -- construct the histo result:
+--     res_part <- newVName "res_part"
+--     ps2 <- zipWithM newParam ["nz_pr", "zr_ct"] [eltp, Prim int64]
+--     let [nz_prod, zr_count] = map paramName ps2
+--     if_stms <- helperMulOp2 ptp nz_prod zr_count res_part
+--     lam_bdy_2 <- runBodyBuilder . localScope (scopeOfLParams ps2) $ do
+--       addStms if_stms
+--       resultBodyM [Var res_part]
+--     h_part <-
+--       letExp "hist_part" $
+--         Op $
+--           Screma
+--             shapedim
+--             [nz_prods, zr_counts]
+--             (ScremaForm [] [] (Lambda ps2 lam_bdy_2 [eltp]))
+--     ps3 <- zipWithM newParam ["h_orig", "h_part"] [eltp, eltp]
+--     let [ph_orig, ph_part] = map paramName ps3
+--     lam_pe_bdy <- runBodyBuilder . localScope (scopeOfLParams ps3) $ do
+--       r <- letSubExp "res" $ BasicOp $ BinOp mulop (Var ph_orig) (Var ph_part)
+--       resultBodyM [r]
+--     auxing aux $
+--       letBind (Pat [pe]) $
+--         Op $
+--           Screma
+--             shapedim
+--             [orig_dst, h_part]
+--             (ScremaForm [] [] (Lambda ps3 lam_pe_bdy [eltp]))
+--     m
+--     -- reverse trace
+--     pe_bar <- lookupAdjVal $ patElemName pe
+--     -- updates the orig_dst with its proper bar
+--     mul_lam' <- renameLambda mul_lam
+--     orig_bar <-
+--       letTupExp (baseString orig_dst ++ "_bar") $
+--         Op $
+--           Screma
+--             shapedim
+--             [h_part, pe_bar]
+--             (ScremaForm [] [] mul_lam')
+--     zipWithM_ updateAdj [orig_dst] orig_bar
+--     -- updates the partial histo result with its proper bar
+--     mul_lam'' <- renameLambda mul_lam
+--     part_bars <-
+--       letTupExp (baseString h_part ++ "_bar") $
+--         Op $
+--           Screma
+--             shapedim
+--             [orig_dst, pe_bar]
+--             (ScremaForm [] [] mul_lam'')
+--     let [part_bar] = part_bars
+--     -- add the contributions to each array element
+--     pj <- newParam "j" (Prim int64)
+--     pv <- newParam "v" eltp
+--     let j = paramName pj
+--     ((zr_cts, pr_bar, nz_prd), tmp_stms) <- runBuilderT' . localScope (scopeOfLParams [pj, pv]) $ do
+--       zr_cts <- letExp "zr_cts" $ BasicOp $ Index zr_counts $ fullSlice eltp [DimFix (Var j)]
+--       pr_bar <- letExp "pr_bar" $ BasicOp $ Index part_bar $ fullSlice eltp [DimFix (Var j)]
+--       nz_prd <- letExp "nz_prd" $ BasicOp $ Index nz_prods $ Slice [DimFix (Var j)]
+--       return (zr_cts, pr_bar, nz_prd)
+--     bdy_tmp <- helperMulOp3 ptp mulop nz_prd zr_cts pv pr_bar
+--     lam_bar <-
+--       runBodyBuilder . localScope (scopeOfLParams [pj, pv]) $
+--         eBody
+--           [ eIf
+--               (toExp $ withinBounds [(shapedim, j)])
+--               ( do
+--                   addStms (tmp_stms <> bodyStms bdy_tmp)
+--                   resultBodyM (map resSubExp $ bodyResult bdy_tmp)
+--               )
+--               (resultBodyM [Constant $ blankPrimValue ptp])
+--           ]
+--     vs_bar <-
+--       letTupExp (baseString vs ++ "_bar") $
+--         Op $
+--           Screma
+--             n
+--             [inds, vs]
+--             (ScremaForm [] [] (Lambda [pj, pv] lam_bar [eltp]))
+--     zipWithM_ updateAdj [vs] vs_bar
+--   where
+--     mkLamAddI64 = do
+--       pab <- zipWithM newParam ["a", "b"] [Prim int64, Prim int64]
+--       let [a, b] = map paramName pab
+--       let addop = Add Int64 OverflowUndef
+--       lam_bdy <- runBodyBuilder . localScope (scopeOfLParams pab) $ do
+--         r <- letSubExp "r" $ BasicOp $ BinOp addop (Var a) (Var b)
+--         resultBodyM [r]
+--       return $ Lambda pab lam_bdy [Prim int64]
 
 -- General case
 diffHist vjops pat@(Pat [pe]) aux soac m
@@ -651,7 +687,7 @@ diffHist vjops pat@(Pat [pe]) aux soac m
             (eBody [eSubExp $ int64Zero])
             (eBody
               [
-                eIf -- if ind > histDiam
+                eIf -- if ind > histDim
                 (eCmpOp (CmpSlt Int64) (eSubExp histDim) (eParam ind_param) )
                 (eBody [eSubExp $ int64Zero])
                 (eBody [eSubExp $ int64One])
@@ -764,13 +800,13 @@ diffHist vjops pat@(Pat [pe]) aux soac m
 
 
       -- Collect sorted values
-      -- new_vals = map(\i -> vs[i]) sorted_is
+      -- sorted_vals = map(\i -> vs[i]) sorted_is
       val_idx <- newParam "val_idx" $ Prim int64
-      new_vals_body <- runBodyBuilder . localScope (scopeOfLParams [val_idx]) $ do
+      sorted_vals_body <- runBodyBuilder . localScope (scopeOfLParams [val_idx]) $ do
         body <- letSubExp "body" $ BasicOp $ Index vs (fullSlice (Prim int64) [DimFix (Var (paramName val_idx))])     
         resultBodyM [body]
-      let new_vals_lambda = Lambda [val_idx] new_vals_body [Prim int64]
-      new_vals <- letExp "new_vals" $ Op $ Screma n' [sorted_is] $ ScremaForm [][] new_vals_lambda
+      let sorted_vals_lambda = Lambda [val_idx] sorted_vals_body [Prim int64]
+      sorted_vals <- letExp "sorted_vals" $ Op $ Screma n' [sorted_is] $ ScremaForm [][] sorted_vals_lambda
 
       let true  = Constant $ IntValue $ intValue Int8 1
       let false = Constant $ IntValue $ intValue Int8 0
@@ -783,7 +819,7 @@ diffHist vjops pat@(Pat [pe]) aux soac m
       mk_flag_body <- runBodyBuilder . localScope (scopeOfLParams [bin, index]) $ do
         
         idx_minus_one <- letSubExp "idx_minus_one" $ BasicOp $ BinOp (Sub Int64 OverflowUndef) (Var $ paramName index) (intConst Int64 1)
-        prev_elem <- letExp "prev_elem" $ BasicOp $ Index vs (fullSlice (Prim int64) [DimFix idx_minus_one]) 
+        prev_elem <- letExp "prev_elem" $ BasicOp $ Index sorted_bins (fullSlice (Prim int64) [DimFix idx_minus_one]) 
         
         let firstElem =
               eCmpOp
@@ -815,13 +851,13 @@ diffHist vjops pat@(Pat [pe]) aux soac m
 
 
       ---- Forward segmented exlusive scan in one array, reverse segmented exlusive scan in another.
-      seg_scan_exc <- mkSegScanExc f nes n' new_vals final_flags
+      seg_scan_exc <- mkSegScanExc f nes n' sorted_vals final_flags
       fwd_scan <- letTupExp "fwd_scan" $ Op seg_scan_exc
       let [_, lis] = fwd_scan
 
       ---- Reverse segmented exculsive scan. Reverse flags and vals.
-      -- rev_vals = reverse new_vals
-      rev_vals <- eReverse new_vals
+      -- rev_vals = reverse sorted_vals
+      rev_vals <- eReverse sorted_vals
       -- final_flags_rev = reverse final_flags
       final_flags_rev <- eReverse final_flags
 
@@ -851,7 +887,8 @@ diffHist vjops pat@(Pat [pe]) aux soac m
       -- Run segmented scan on reversed arrays.
       rev_seg_scan_exc <- mkSegScanExc f nes n' rev_vals rev_flags
       rev_scan <- letTupExp "rev_scan" $ Op rev_seg_scan_exc
-      let [_, ris] = rev_scan
+      let [_, ris_rev] = rev_scan
+      ris <- eReverse ris_rev
 
       -- Get index of the end of each segment
       --seg_end_idx = map (\i -> if i == n'-1
@@ -900,13 +937,13 @@ diffHist vjops pat@(Pat [pe]) aux soac m
       --bin_lst_lis   = scatter (replicate ne (len hist_orig)) seg_end_idx lis
       bin_last_lis_dst <- letExp "bin_last_lis_dst" $ BasicOp $ Replicate shape (head nes)
       f''' <- mkIdentityLambda [Prim int64, Prim int64]
-      bin_last_lis <- letExp "bin_last_lis" $ Op $ Scatter histDim [seg_end_idx, lis] f''' [(shape, 1, bin_last_lis_dst)]
+      bin_last_lis <- letExp "bin_last_lis" $ Op $ Scatter n' [seg_end_idx, lis] f''' [(shape, 1, bin_last_lis_dst)]
 
       -- lis was exc-scan, so we need the last element aswell.
       -- bin_last_v_dst = scatter (replicate ne (len hist_orig)) seg_end_idx sorted_vals
       bin_last_v_dst <- letExp "bin_last_v_dst" $ BasicOp $ Replicate shape (head nes)
       f'''' <- mkIdentityLambda [Prim int64, Prim int64]
-      bin_last_v <- letExp "bin_last_v" $ Op $ Scatter histDim [seg_end_idx, new_vals] f'''' [(shape, 1, bin_last_v_dst)]
+      bin_last_v <- letExp "bin_last_v" $ Op $ Scatter n' [seg_end_idx, sorted_vals] f'''' [(shape, 1, bin_last_v_dst)]
 
       -- Temp histogram of only our input values.
       -- hist' = map2 lam bin_last_lis bin_last_v
@@ -921,10 +958,35 @@ diffHist vjops pat@(Pat [pe]) aux soac m
       hist' <- letExp "hist'" $ Op $ Screma histDim [bin_last_lis, bin_last_v] $ ScremaForm [][] op
 
       -- Garbage to make the program compile
-      addStm $ Let pat aux $ BasicOp $ Index lis $ fullSlice (Prim int64) [DimSlice int64Zero histDim (constant (1 :: Int64))]
+      letBind pat $ BasicOp $ SubExp $ Var hist'
       m
       
-      insAdj orig_dst lis
+      --addStm $ Let pat aux hist'Op
+      --last_sliced <- letExp "last_arr_sliced" $ BasicOp $ Index lis $ fullSlice (Prim bitType) [DimSlice zeroSubExp wsubexp (constant (1 :: Int64))]
+
+      hist_temp_bar <- lookupAdjVal $ patElemName pe
+
+      -- Should this be above 'm'? Last time orig_dst exists is when hist' comes to scope
+      void $ updateAdj orig_dst hist_temp_bar
+
+      let t = Prim int64 -- TODO: change this to type 
+      -- hist_temp_bar_repl = map (\ ind -> hist_tmp_bar[ind]) sorted_bins
+      sorted_bin_param <- newParam "sorted_bin_p" $ Prim int64
+      hist_temp_bar_repl_body <- runBodyBuilder . localScope (scopeOfLParams [sorted_bin_param]) $ do
+        body <- letSubExp "body" $ BasicOp $ Index hist_temp_bar (fullSlice (Prim int64) [DimFix (Var (paramName sorted_bin_param))])     
+        resultBodyM [body]
+      let hist_temp_bar_repl_lambda = Lambda [sorted_bin_param] hist_temp_bar_repl_body [t]
+      hist_temp_bar_repl <- letExp "hist_temp_bar_repl" $ Op $ Screma n' [sorted_bins] $ ScremaForm [][] hist_temp_bar_repl_lambda
+
+      (_, lam_adj) <- mkF f
+      vjpMap vjops [AdjVal $ Var hist_temp_bar_repl] n' lam_adj [lis, sorted_vals, ris] -- Doesn't support lists
+
+      vs_bar_contrib_reordered <- lookupAdjVal sorted_vals
+      vs_bar_contrib <- letExp "vs_bar_contributions" $ BasicOp $ Replicate (Shape [n]) (head nes)
+      f''''' <- mkIdentityLambda [Prim int64, t]
+      vs_bar_contrib_scatter <- letExp "vs_bar_contrib_scatter" $ Op $ Scatter n' [sorted_is, vs_bar_contrib_reordered] f''''' [(Shape [n], 1, vs_bar_contrib)]
+      void $ updateAdj vs vs_bar_contrib_scatter-- second value here is the contributions, currently not used because it has to be [n] and all we have is [new_length]
+
 
 
 diffHist _ _ _ soac _ =
