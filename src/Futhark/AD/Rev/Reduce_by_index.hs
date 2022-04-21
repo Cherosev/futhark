@@ -682,8 +682,8 @@ diffHist vjops pat@(Pat [pe]) aux soac m
       ind_param <- newParam "ind" $ Prim int64
       pred_body <- runBodyBuilder . localScope (scopeOfLParams [ind_param]) $
         eBody
-          [ eIf -- if 0 <= ind
-            (eCmpOp (CmpSle Int64) (eSubExp int64Zero) (eParam ind_param) )
+          [ eIf -- if 0 > ind
+            (eCmpOp (CmpSlt Int64) (eSubExp int64Zero) (eParam ind_param) )
             (eBody [eSubExp $ int64Zero])
             (eBody
               [
@@ -847,7 +847,7 @@ diffHist vjops pat@(Pat [pe]) aux soac m
                 ])
           ]
       let mk_flag_lambda = Lambda [bin, index] mk_flag_body [Prim $ IntType Int8]
-      final_flags <- letExp "final_flags" $ Op $ Screma n' [new_bins, iota_n'] $ ScremaForm [][] mk_flag_lambda
+      final_flags <- letExp "final_flags" $ Op $ Screma n' [sorted_bins, iota_n'] $ ScremaForm [][] mk_flag_lambda
 
 
       ---- Forward segmented exlusive scan in one array, reverse segmented exlusive scan in another.
