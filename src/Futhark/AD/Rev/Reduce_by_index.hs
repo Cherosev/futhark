@@ -716,7 +716,7 @@ diffHist vjops pat@(Pat [pe]) _aux soac m
       pred_body <- runBodyBuilder . localScope (scopeOfLParams [ind_param]) $
         eBody
           [ eIf -- if 0 > ind
-            (eCmpOp (CmpSlt Int64) (eSubExp int64Zero) (eParam ind_param) )
+            (eCmpOp (CmpSlt Int64) (eParam ind_param) (eSubExp int64Zero) )
             (eBody [eSubExp $ int64Zero])
             (eBody
               [
@@ -924,15 +924,16 @@ diffHist vjops pat@(Pat [pe]) _aux soac m
       ris <- eReverse ris_rev
 
       -- Get index of the end of each segment
-      --seg_end_idx = map (\i -> if i == n'-1
-      --                          then i
-      --                          else if final_flags[i+1] == 1 
-      --                               then i
-      --                               else -1
-      --                   ) (iota n')
+      --seg_end_idx = map (\i, bin -> if i == n'-1
+      --                              then bin
+      --                              else if final_flags[i+1] == 1 
+      --                                   then bin
+      --                                   else -1
+      --                   ) (iota n') sorted_bins
 
       i'' <- newParam "i''" $ Prim int64
-      seg_end_idx_body <- runBodyBuilder . localScope (scopeOfLParams [i'']) $ do
+      current_bin <- newParam "current_bin" $ Prim int64
+      seg_end_idx_body <- runBodyBuilder . localScope (scopeOfLParams [i'', current_bin]) $ do
         idx_plus_one <- letSubExp "idx_plus_one" $ BasicOp $ BinOp (Add Int64 OverflowUndef) (Var $ paramName i'') (intConst Int64 1)
         next_elem <- letExp "next_elem" $ BasicOp $ Index final_flags (fullSlice (Prim int64) [DimFix idx_plus_one]) 
         lastElemIdx <- letExp "lastElemIdx" $ BasicOp $ BinOp (Sub Int64 OverflowUndef) (n') (intConst Int64 1)
@@ -953,19 +954,19 @@ diffHist vjops pat@(Pat [pe]) _aux soac m
           [
             eIf
             isLastElem
-            (resultBodyM $ [Var $ paramName i''])
+            (resultBodyM $ [Var $ paramName current_bin])
             (eBody
               [
                 eIf
                 next_is_new_seg
-                (resultBodyM [Var $ paramName i''])
+                (resultBodyM [Var $ paramName current_bin])
                 (resultBodyM [Constant $ IntValue $ Int64Value (-1)])
               ]
             )
           ]
 
-      let seg_end_idx_lam = Lambda [i''] seg_end_idx_body [Prim int64]
-      seg_end_idx <- letExp "seg_end_idx" $ Op $ Screma n' [iota_n'] $ ScremaForm [][] seg_end_idx_lam
+      let seg_end_idx_lam = Lambda [i'', current_bin] seg_end_idx_body [Prim int64]
+      seg_end_idx <- letExp "seg_end_idx" $ Op $ Screma n' [iota_n', sorted_bins] $ ScremaForm [][] seg_end_idx_lam
 
       --bin_lst_lis   = scatter (replicate ne (len hist_orig)) seg_end_idx lis
       bin_last_lis_dst <- letExp "bin_last_lis_dst" $ BasicOp $ Replicate shape (head nes)
@@ -1006,7 +1007,9 @@ diffHist vjops pat@(Pat [pe]) _aux soac m
       letBind pat $ BasicOp $ SubExp $ Var hist_res
 
       m
-      
+       
+
+
       -- Lookup adjoint of histogram
       hist_res_bar <- lookupAdjVal $ patElemName pe
 
