@@ -1,15 +1,19 @@
--- Simple reduce with multiplication
+-- Simple histogram with multiplication
 -- ==
--- entry: main
--- compiled input { [0i64, 0i64, 0i64, 0i64] [1f32, 2f32, 3f32, 4f32] [1f32]} output { [24f32, 12f32, 8f32, 6f32] [24f32] }
+-- entry: fwd rev
 
+def onehot (n: i64) (i: i64) (inp: f32) : [n]f32 =
+  tabulate n (\j -> if (i==j) then inp else 0.0f32)
+  
+let histo_mul [n][w](is: [n]i64) (dest: [w]f32) (vs: [n]f32) : [w]f32 =
+  reduce_by_index (copy dest) (*) 1f32 is vs
 
-let histo_gen [w][n] (is: [n]i64) (vs: [n]f32, dest: [w]f32) : [w]f32 =
-    reduce_by_index (copy dest) (*) 1f32 is vs
+entry rev [n][w](is: [n]i64) (vs: [n]f32) (hist_bar': [w]f32) =
+  map (\i -> vjp (histo_mul is (replicate w 1f32)) vs (onehot w i hist_bar'[i])) (iota w) |> transpose
+  
 
-entry main [n][w] (is: [n]i64) (vs: [n]f32) (hist_bar: [w]f32) =
-    vjp (histo_gen is) (vs, replicate w 1f32) hist_bar
+entry fwd [n][w](is: [n]i64) (vs: [n]f32) (hist_bar': [w]f32) =
+  map (jvp (histo_mul is (replicate w 1f32)) vs) 
+    (map (\ i -> onehot n i hist_bar'[is[i]]) (iota n))
 
--- [0i64, 0i64, 0i64, 0i64] 
--- [1f32, 2f32, 3f32, 4f32] 
--- [1f32]
+   
