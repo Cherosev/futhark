@@ -20,7 +20,7 @@ import Futhark.Transform.Rename
 data FirstOrSecond = WrtFirst | WrtSecond
 
 -- computes `d(x op y)/dx` or d(x op y)/dy
-mkScanAdjointLam :: VjpOps -> Lambda -> FirstOrSecond -> ADM Lambda
+mkScanAdjointLam :: VjpOps -> Lambda SOACS -> FirstOrSecond -> ADM (Lambda SOACS)
 mkScanAdjointLam ops lam0 which = do
   let len = length $ lambdaReturnType lam0
   lam <- renameLambda lam0
@@ -64,10 +64,10 @@ eReverse arr = do
       slice = fullSlice arr_t [DimSlice start w stride]
   letExp (baseString arr <> "_rev") $ BasicOp $ Index arr slice
 
-genIdxLamBdy :: VName -> [(SubExp, Param Type)] -> Type -> ADM Body
+genIdxLamBdy :: VName -> [(SubExp, Param Type)] -> Type -> ADM (Body SOACS)
 genIdxLamBdy as wpis = genRecLamBdy as wpis []
   where
-    genRecLamBdy :: VName -> [(SubExp, Param Type)] -> [Param Type] -> Type -> ADM Body
+    genRecLamBdy :: VName -> [(SubExp, Param Type)] -> [Param Type] -> Type -> ADM (Body SOACS)
     genRecLamBdy arr w_pis nest_pis (Array t (Shape []) _) =
       genRecLamBdy arr w_pis nest_pis (Prim t)
     genRecLamBdy arr w_pis nest_pis (Array t (Shape (s : ss)) _) = do
@@ -99,7 +99,7 @@ genIdxLamBdy as wpis = genRecLamBdy as wpis []
 -- Pattern Matches special lambda cases:
 --   plus, multiplication, min, max, which are all commutative.
 -- Succeeds for (\ x y -> x binop y) or (\x y -> y binop x).
-isSpecOpLam :: (BinOp -> Maybe BinOp) -> Lambda -> Maybe BinOp
+isSpecOpLam :: (BinOp -> Maybe BinOp) -> Lambda SOACS -> Maybe BinOp
 isSpecOpLam isOp lam =
   isRedStm
     (map paramName $ lambdaParams lam)
@@ -112,7 +112,7 @@ isSpecOpLam isOp lam =
         else Nothing
     isRedStm _ _ _ = Nothing
 
-isAddTowLam :: Lambda -> Maybe BinOp
+isAddTowLam :: Lambda SOACS -> Maybe BinOp
 isAddTowLam lam = isSpecOpLam isAddOp $ filterMapOp lam
   where
     isAddOp bop@(Add _ _) = Just bop
@@ -129,14 +129,14 @@ isAddTowLam lam = isSpecOpLam isAddOp $ filterMapOp lam
         filterMapOp map_lam
     filterMapOp other_lam = other_lam
 
-isMulLam :: Lambda -> Maybe BinOp
+isMulLam :: Lambda SOACS -> Maybe BinOp
 isMulLam = isSpecOpLam isMulOp
   where
     isMulOp bop@(Mul _ _) = Just bop
     isMulOp bop@(FMul _) = Just bop
     isMulOp _ = Nothing
 
-isMinMaxLam :: Lambda -> Maybe BinOp
+isMinMaxLam :: Lambda SOACS -> Maybe BinOp
 isMinMaxLam = isSpecOpLam isMinMaxOp
   where
     isMinMaxOp bop@(SMin _) = Just bop
@@ -158,7 +158,7 @@ mind_eq_min1 ind =
 -- meaning the min/max value tupled with the minimal index where
 --   that value was found (when duplicates exist). We use `-1` as
 --   the neutral element of the index.
-mkMinMaxIndLam :: PrimType -> BinOp -> ADM Lambda
+mkMinMaxIndLam :: PrimType -> BinOp -> ADM (Lambda SOACS)
 mkMinMaxIndLam ptp minmax_op = do
   fargs_vals <- mapM (`newParam` Prim ptp) ["acc_v", "arg_v"]
   fargs_inds <- mapM (`newParam` Prim int64) ["acc_ind", "arg_ind"]
@@ -198,7 +198,7 @@ peElemEq0 ptp farg =
     (LeafExp (paramName farg) ptp)
     (ValueExp (blankPrimValue ptp))
 
-helperMulOp1 :: PrimType -> BinOp -> ADM (Lambda, Lambda)
+helperMulOp1 :: PrimType -> BinOp -> ADM (Lambda SOACS, Lambda SOACS)
 helperMulOp1 ptp bop = do
   -- on forward sweep: create the map lambda
   let eltp = Prim ptp
@@ -242,7 +242,7 @@ helperMulOp2 ptp nz_prod zr_count prod = do
           (resultBodyM [Var nz_prod])
     addStm (mkLet [Ident prod $ Prim ptp] $ BasicOp $ SubExp $ Var $ head tmps)
 
-helperMulOp3 :: PrimType -> BinOp -> VName -> VName -> Param Type -> VName -> ADM Body
+helperMulOp3 :: PrimType -> BinOp -> VName -> VName -> Param Type -> VName -> ADM (Body SOACS)
 helperMulOp3 ptp bop nz_prod zr_count fa_orig prod_bar = do
   -- if zero_count == 0 then (nz_prod / a) * p_bar
   --                            else if zero_count == 1 && a == 0
@@ -296,7 +296,7 @@ helperMulOp3 ptp bop nz_prod zr_count fa_orig prod_bar = do
 --            in (v, f)) tmp flags
 
 -- Lift a lambda to produce an exlusive segmented scan operator.
-mkSegScanExc :: Lambda -> [SubExp] -> SubExp -> VName -> VName -> ADM (SOAC SOACS) 
+mkSegScanExc :: Lambda SOACS -> [SubExp] -> SubExp -> VName -> VName -> ADM (SOAC SOACS) 
 mkSegScanExc lam ne n vals flags = do
   -- Get lambda return type
   let rt = lambdaReturnType lam
@@ -358,7 +358,7 @@ mkSegScanExc lam ne n vals flags = do
 
   return $ Screma n [flags, iota_n] $ ScremaForm [Scan scan_lambda ((intConst Int8 0) : ne)] [] tmp_lam
 
-mkF :: Lambda -> ADM ([VName], Lambda)
+mkF :: Lambda SOACS -> ADM ([VName], Lambda SOACS)
 mkF lam = do
   lam_l <- renameLambda lam
   lam_r <- renameLambda lam
@@ -462,8 +462,17 @@ getMulOp (Prim t) = case t of
                       _              -> error $ "Unsupported type in getMulOp"
 getMulOp _        = error $ "Unsupported type in getMulOp"
 
+getBaseAdj :: Type -> SubExp
+getBaseAdj (Prim (IntType Int8))  = Constant $ IntValue $ Int8Value 0
+getBaseAdj (Prim (IntType Int16)) = Constant $ IntValue $ Int16Value 0
+getBaseAdj (Prim (IntType Int32)) = Constant $ IntValue $ Int32Value 0
+getBaseAdj (Prim (IntType Int64)) = Constant $ IntValue $ Int64Value 0
+getBaseAdj (Prim (FloatType Float32)) = Constant $ FloatValue $ Float32Value 0.0
+getBaseAdj (Prim (FloatType Float64)) = Constant $ FloatValue $ Float64Value 0.0
+getBaseAdj _ = error "In getBaseAdj, Reduce_by_index.hs: input not supported"
+
 -- Takes name of two params, a binOp and the type of params and gives a lambda of that application
-mkSimpleLambda :: String -> String -> BinOp -> Type -> ADM Lambda
+mkSimpleLambda :: String -> String -> BinOp -> Type -> ADM (Lambda SOACS)
 mkSimpleLambda x_name y_name binOp t = do
   x <- newParam x_name t
   y <- newParam y_name t
@@ -476,7 +485,7 @@ mkSimpleLambda x_name y_name binOp t = do
       ]
   return $ Lambda [x, y] lam_body [t]
 
-diffHist :: VjpOps -> Pat -> StmAux() -> SOAC SOACS -> ADM () -> ADM ()
+diffHist :: VjpOps -> Pat Type -> StmAux() -> SOAC SOACS -> ADM () -> ADM ()
 -- Special case (+)
 diffHist _vjops pat aux soac m
   | (Hist n [inds, vs] hist_add bucket_fun) <- soac,
@@ -1051,7 +1060,7 @@ diffHist vjops pat@(Pat [pe]) _aux soac m
       -- Get adjoints of values with valid bins (computed by running vjpMap before)
       vs_bar_contrib_reordered <- lookupAdjVal sorted_vals
       -- Replicate array of 0's
-      vs_bar_contrib_dst <- letExp "vs_bar_contrib_dst" $ BasicOp $ Replicate (Shape [n]) (head nes) -- OBS!! Currently not 0
+      vs_bar_contrib_dst <- letExp "vs_bar_contrib_dst" $ BasicOp $ Replicate (Shape [n]) (getBaseAdj t)
       -- Scatter adjoints to 0-array.
       f''''' <- mkIdentityLambda [Prim int64, t]
       vs_bar_contrib <- letExp "vs_bar_contrib" $ Op $ Scatter n' [sorted_is, vs_bar_contrib_reordered] f''''' [(Shape [n], 1, vs_bar_contrib_dst)]

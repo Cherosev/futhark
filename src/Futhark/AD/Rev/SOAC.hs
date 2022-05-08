@@ -46,7 +46,6 @@ commonSOAC pat aux soac m = do
   returnSweepCode $ mapM lookupAdj $ patNames pat
 
 vjpSOAC :: VjpOps -> Pat Type -> StmAux () -> SOAC SOACS -> ADM () -> ADM ()
-vjpSOAC :: VjpOps -> Pat -> StmAux () -> SOAC SOACS -> ADM () -> ADM ()
 -- Histogram Case
 vjpSOAC ops pat aux (Hist len args hist_op bucket_fun) m 
   | not $ isIdentityLambda bucket_fun = do
