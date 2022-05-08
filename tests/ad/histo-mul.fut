@@ -1,5 +1,6 @@
 -- Simple histogram with multiplication
 -- ==
+-- entry: main
 --
 -- compiled input { [1i64, 3i64, 2i64,-1i64, 2i64, 1i64, 1i64, 2i64, 3i64, 2i64,-1i64, 2i64, 2i64]
 --				    [1f32, 3f32, 2f32, 1f32, 2f32, 1f32, 1f32, 2f32, 3f32, 2f32, 1f32, 2f32, 2f32]
