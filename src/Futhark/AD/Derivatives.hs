@@ -92,9 +92,12 @@ pdBinOp (SMin it) a b =
   where
     derivs x y = (fromBoolExp (x .<=. y), fromBoolExp (x .>. y))
 --
+pdBinOp (Shl it) a b =
+  pdBinOp (Mul it OverflowWrap) a $ BinOpExp (Pow it) (iConst it 2) b
 pdBinOp (LShr it) a b =
-  pdBinOp (UDiv it Unsafe) a $
-    BinOpExp (Pow it) (ValueExp (IntValue (intValue it (2 :: Int)))) b
+  pdBinOp (UDiv it Unsafe) a $ BinOpExp (Pow it) (iConst it 2) b
+pdBinOp (AShr it) a b =
+  pdBinOp (SDiv it Unsafe) a $ BinOpExp (Pow it) (iConst it 2) b
 pdBinOp (And it) _a _b = (iConst it 0, iConst it 0) -- FIXME
 pdBinOp (Or it) _a _b = (iConst it 0, iConst it 0) -- FIXME
 pdBinOp (Xor it) _a _b = (iConst it 0, iConst it 0) -- FIXME
