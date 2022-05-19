@@ -777,7 +777,7 @@ diffHist vjops pat@(Pat [pe]) _aux soac m
       
       ---- Radix sort (new_bins, new_indexes) w.r.t. new_bins.
       -- [sorted_is, sorted_bins] = 
-      --   loop over [new_indexes, new_bins] for i < 63 do 
+      --   loop over [new_indexes, new_bins] for i < 64 do 
       --     bits = map (\ind_x -> (ind_x >> i) & 1) new_bins
       --     newidx = partition2 bits (iota n')
       --     [map(\i -> new_indexes[i]) newidx, map(\i -> new_bins[i]) newidx]
@@ -798,7 +798,7 @@ diffHist vjops pat@(Pat [pe]) _aux soac m
       let loop_vars = [(paramIndexes, Var new_indexes_cpy),(paramBins, Var new_bins_cpy)]
       
       -- bound = log2ceiling(w) (inner hist size aka number of bins)
-      let bound = Constant $ IntValue $ intValue Int64 (63::Integer) -- Set to 63 since the most significant bit of signed int is negative numbers, which have been filtered out.
+      let bound = Constant $ IntValue $ intValue Int64 (64::Integer)
 
       ((idxres, binsres), stms) <- runBuilderT' . localScope (scopeOfFParams [paramIndexes, paramBins]) $ do
         -- bits = map (\ind_x -> (ind_x >> digit_n) & 1) ind
