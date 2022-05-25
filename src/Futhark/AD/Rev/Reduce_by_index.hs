@@ -524,14 +524,14 @@ diffHist _vjops (Pat [pe]) aux soac m
   
     -- forward sweep makes a copy of the consumed array and computes a lifted histo
     orig_dst_cpy <- letExp (baseString orig_dst ++ "_cpy") $ BasicOp $ Copy orig_dst
-    f' <- mkIdentityLambda [Prim int64, eltp, Prim int64]
-    repl <- letExp "minus_ones" $ BasicOp $ Replicate shape (intConst Int64 (-1))
+    minus_ones <- letExp "minus_ones" $ BasicOp $ Replicate shape (intConst Int64 (-1))
+    iota_n <- letExp "iota_n" $ BasicOp $ Iota n (intConst Int64 0) (intConst Int64 1) Int64
     maxind_lam <- mkMinMaxIndLam ptp bop
     
-    let hist_op = HistOp shape rf [orig_dst_cpy, repl] [ne, intConst Int64 (-1)] maxind_lam
-    iota_n <- letExp "iota_n" $ BasicOp $ Iota n (intConst Int64 0) (intConst Int64 1) Int64
+    let hist_op = HistOp shape rf [orig_dst_cpy, minus_ones] [ne, intConst Int64 (-1)] maxind_lam
     hist_inds <- newVName "hist_inds"
     let histo_pat = Pat [pe, PatElem hist_inds (mkI64ArrType shape)]
+    f' <- mkIdentityLambda [Prim int64, eltp, Prim int64]
     auxing aux $ letBind histo_pat $ Op $ Hist n [inds, vs, iota_n] [hist_op] f'
     m
     -- reverse sweep:
@@ -539,7 +539,7 @@ diffHist _vjops (Pat [pe]) aux soac m
     -- create the bar of `orig_dst` by means of a map:
     pis_h <- zipWithM newParam ["min_ind", "h_elem"] [Prim int64, eltp]
     let [min_ind_h, h_elem_h] = map paramName pis_h
-    lam_bdy_hist_bar <-
+    lam_bdy_orig_bar <-
       runBodyBuilder . localScope (scopeOfLParams pis_h) $
         eBody
           [ eIf
@@ -547,12 +547,12 @@ diffHist _vjops (Pat [pe]) aux soac m
               (resultBodyM [Var h_elem_h])
               (resultBodyM [Constant $ blankPrimValue ptp])
           ]
-    let lam_hist_bar = Lambda pis_h lam_bdy_hist_bar [eltp]
-    hist_bar <-
+    let lam_orig_bar = Lambda pis_h lam_bdy_orig_bar [eltp]
+    orig_bar <-
       letExp (baseString orig_dst ++ "_bar") $
         Op $
-          Screma shapedim [hist_inds, pe_bar] (ScremaForm [] [] lam_hist_bar)
-    insAdj orig_dst hist_bar
+          Screma shapedim [hist_inds, pe_bar] (ScremaForm [] [] lam_orig_bar)
+    insAdj orig_dst orig_bar
     -- update vs_bar with a map and a scatter
     vs_bar <- lookupAdjVal vs
     pis_v <- zipWithM newParam ["min_ind", "h_elem"] [Prim int64, eltp]
@@ -597,7 +597,7 @@ diffHist _vjops (Pat [pe]) aux soac m
     let pe_tp = patElemDec pe
     (map_lam, _) <- helperMulOp1 ptp mulop
     vs_lift <- letTupExp "nzel_zrct" $ Op $ Screma n [vs] (ScremaForm [] [] map_lam)
-    let [nz_vs, one_zrs] = vs_lift
+    let [nzel_zrct, nzel_zrct_flag] = vs_lift
     zr_counts0 <- letExp "zr_cts" $ BasicOp $ Replicate shape (intConst Int64 0)
     nz_prods0 <- letExp "nz_prd" $ BasicOp $ Replicate shape ne
     nz_prods <- newVName "non_zero_prod"
@@ -612,7 +612,7 @@ diffHist _vjops (Pat [pe]) aux soac m
               PatElem zr_counts $
               arrayOf (Prim int64) shape NoUniqueness
             ]
-    let soac_exp = Op $ Hist n [inds, inds, nz_vs, one_zrs] [hist_nzp, hist_zrn] f'
+    let soac_exp = Op $ Hist n [inds, inds, nzel_zrct, nzel_zrct_flag] [hist_nzp, hist_zrn] f'
     auxing aux $ letBind soac_pat soac_exp
     -- construct the histo result:
     res_part <- newVName "res_part"
@@ -622,8 +622,8 @@ diffHist _vjops (Pat [pe]) aux soac m
     lam_bdy_2 <- runBodyBuilder . localScope (scopeOfLParams ps2) $ do
       addStms if_stms
       resultBodyM [Var res_part]
-    h_part <-
-      letExp "hist_part" $
+    hist_temp <-
+      letExp "hist_temp" $
         Op $
           Screma
             shapedim
@@ -639,38 +639,37 @@ diffHist _vjops (Pat [pe]) aux soac m
         Op $
           Screma
             shapedim
-            [orig_dst, h_part]
+            [orig_dst, hist_temp]
             (ScremaForm [] [] (Lambda ps3 lam_pe_bdy [eltp]))
     m
     -- reverse trace
-    pe_bar <- lookupAdjVal $ patElemName pe
+    hist_bar <- lookupAdjVal $ patElemName pe
     -- updates the orig_dst with its proper bar
     mul_lam' <- renameLambda mul_lam
     orig_bar <-
-      letTupExp (baseString orig_dst ++ "_bar") $
+      letExp (baseString orig_dst ++ "_bar") $
         Op $
           Screma
             shapedim
-            [h_part, pe_bar]
+            [hist_temp, hist_bar]
             (ScremaForm [] [] mul_lam')
-    zipWithM_ updateAdj [orig_dst] orig_bar
+    updateAdj orig_dst orig_bar
     -- updates the partial histo result with its proper bar
     mul_lam'' <- renameLambda mul_lam
-    part_bars <-
-      letTupExp (baseString h_part ++ "_bar") $
+    hist_temp_bar <-
+      letExp (baseString hist_temp ++ "_bar") $
         Op $
           Screma
             shapedim
-            [orig_dst, pe_bar]
+            [orig_dst, hist_bar]
             (ScremaForm [] [] mul_lam'')
-    let [part_bar] = part_bars
     -- add the contributions to each array element
     pj <- newParam "j" (Prim int64)
     pv <- newParam "v" eltp
     let j = paramName pj
     ((zr_cts, pr_bar, nz_prd), tmp_stms) <- runBuilderT' . localScope (scopeOfLParams [pj, pv]) $ do
       zr_cts <- letExp "zr_cts" $ BasicOp $ Index zr_counts $ fullSlice eltp [DimFix (Var j)]
-      pr_bar <- letExp "pr_bar" $ BasicOp $ Index part_bar $ fullSlice eltp [DimFix (Var j)]
+      pr_bar <- letExp "pr_bar" $ BasicOp $ Index hist_temp_bar $ fullSlice eltp [DimFix (Var j)]
       nz_prd <- letExp "nz_prd" $ BasicOp $ Index nz_prods $ Slice [DimFix (Var j)]
       return (zr_cts, pr_bar, nz_prd)
     bdy_tmp <- helperMulOp3 ptp mulop nz_prd zr_cts pv pr_bar
@@ -686,13 +685,13 @@ diffHist _vjops (Pat [pe]) aux soac m
               (resultBodyM [Constant $ blankPrimValue ptp])
           ]
     vs_bar <-
-      letTupExp (baseString vs ++ "_bar") $
+      letExp (baseString vs ++ "_bar") $
         Op $
           Screma
             n
             [inds, vs]
             (ScremaForm [] [] (Lambda [pj, pv] lam_bar [eltp]))
-    zipWithM_ updateAdj [vs] vs_bar
+    updateAdj vs vs_bar
   where
     mkLamAddI64 = do
       pab <- zipWithM newParam ["a", "b"] [Prim int64, Prim int64]
@@ -764,7 +763,7 @@ diffHist vjops pat@(Pat [pe]) _aux soac m
       f'' <- mkIdentityLambda [Prim int64, Prim int64]
       orig_indexes <- letExp "orig_indexes" $ BasicOp $ Iota n (intConst Int64 0) (intConst Int64 1) Int64
       indexes_dst <- letExp "indexes_dst" $ BasicOp $ Scratch int64 [n']
-      new_indexes <- letExp "new_indexes" $ Op $ Scatter n [new_inds, orig_indexes] f'' [(Shape [n'], 1, indexes_dst)]
+      filtered_indexes <- letExp "filtered_indexes" $ Op $ Scatter n [new_inds, orig_indexes] f'' [(Shape [n'], 1, indexes_dst)]
 
       -- new_bins = map (\i -> bins[i]) indexes
       i <- newParam "i" $ Prim int64
@@ -772,7 +771,7 @@ diffHist vjops pat@(Pat [pe]) _aux soac m
         body <- letSubExp "body" $ BasicOp $ Index inds (fullSlice (Prim int64) [DimFix (Var (paramName i))])     
         resultBodyM [body]
       let new_bins_lambda = Lambda [i] new_bins_body [Prim int64]
-      new_bins <- letExp "new_bins" $ Op $ Screma n' [new_indexes] $ ScremaForm [][] new_bins_lambda
+      filtered_bins <- letExp "filtered_bins" $ Op $ Screma n' [filtered_indexes] $ ScremaForm [][] new_bins_lambda
 
       
       ---- Radix sort (new_bins, new_indexes) w.r.t. new_bins.
@@ -783,22 +782,22 @@ diffHist vjops pat@(Pat [pe]) _aux soac m
       --     [map(\i -> new_indexes[i]) newidx, map(\i -> new_bins[i]) newidx]
       i2 <- newVName "i2"
 
-      indexesForLoop <- newVName "new_indexes_rebound"
-      new_indexes_cpy <- letExp (baseString new_indexes ++ "_copyLoop") $ BasicOp $ Copy new_indexes
-      new_indexes_type <- lookupType new_indexes
-      let isDeclTypeInds = toDecl new_indexes_type Unique
+      indexesForLoop <- newVName "filtered_indexes_rebound"
+      filtered_indexes_cpy <- letExp (baseString filtered_indexes ++ "_copyLoop") $ BasicOp $ Copy filtered_indexes
+      filtered_indexes_type <- lookupType filtered_indexes
+      let isDeclTypeInds = toDecl filtered_indexes_type Unique
       let paramIndexes = Param mempty indexesForLoop isDeclTypeInds
       
-      binsForLoop <- newVName "new_bins_rebound"
-      new_bins_cpy <- letExp (baseString new_bins ++ "_copyLoop") $ BasicOp $ Copy new_bins
-      new_bins_type <- lookupType new_bins
-      let isDeclTypeBins = toDecl new_bins_type Unique
+      binsForLoop <- newVName "filtered_bins_rebound"
+      filtered_bins_cpy <- letExp (baseString filtered_bins ++ "_copyLoop") $ BasicOp $ Copy filtered_bins
+      filtered_bins_type <- lookupType filtered_bins
+      let isDeclTypeBins = toDecl filtered_bins_type Unique
       let paramBins = Param mempty binsForLoop isDeclTypeBins
       
-      let loop_vars = [(paramIndexes, Var new_indexes_cpy),(paramBins, Var new_bins_cpy)]
+      let loop_vars = [(paramIndexes, Var filtered_indexes_cpy),(paramBins, Var filtered_bins_cpy)]
       
       -- bound = log2ceiling(w) (inner hist size aka number of bins)
-      let bound = Constant $ IntValue $ intValue Int64 (64::Integer)
+      let bound = Constant $ IntValue $ intValue Int64 (63::Integer)
 
       ((idxres, binsres), stms) <- runBuilderT' . localScope (scopeOfFParams [paramIndexes, paramBins]) $ do
         -- bits = map (\ind_x -> (ind_x >> digit_n) & 1) ind
@@ -816,23 +815,23 @@ diffHist vjops pat@(Pat [pe]) _aux soac m
         -- Partition iota to get the new indices to scatter bins and inds by
         temp_iota <- letExp "temp_iota" $ BasicOp $ Iota n' int64Zero int64One Int64
         scatter_soac <- partition2Maker n' bits temp_iota
-        partitionedidx <- letExp (baseString inds ++ "_scattered") $ Op $ scatter_soac
+        newidx <- letExp (baseString inds ++ "_scattered") $ Op $ scatter_soac
 
         inner_indx_idx <- newParam "inner_indexes_idx" $ Prim int64
         inner_indx_bdy <- runBodyBuilder . localScope (scopeOfLParams [inner_indx_idx]) $ do
           tmp <- letSubExp "indexes_body" $ BasicOp $ Index (paramName paramIndexes) (fullSlice (Prim int64) [DimFix (Var (paramName inner_indx_idx))])
           resultBodyM [tmp]
         let inner_indx_lambda = Lambda [inner_indx_idx] inner_indx_bdy [Prim int64]
-        inner_new_indexes <- letSubExp "new_indexes" $ Op $ Screma n' [partitionedidx] $ ScremaForm [][] inner_indx_lambda
+        new_indexes <- letSubExp "new_indexes" $ Op $ Screma n' [newidx] $ ScremaForm [][] inner_indx_lambda
 
         inner_bins_idx <- newParam "inner_indexes_idx" $ Prim int64
         inner_bins_bdy <- runBodyBuilder . localScope (scopeOfLParams [inner_bins_idx]) $ do
           tmp <- letSubExp "indexes_body" $ BasicOp $ Index (paramName paramBins) (fullSlice (Prim int64) [DimFix (Var (paramName inner_bins_idx))])
           resultBodyM [tmp]
         let inner_bins_lambda = Lambda [inner_bins_idx] inner_bins_bdy [Prim int64]
-        inner_new_bins <- letSubExp "new_bins" $ Op $ Screma n' [partitionedidx] $ ScremaForm [][] inner_bins_lambda
+        new_bins <- letSubExp "new_bins" $ Op $ Screma n' [newidx] $ ScremaForm [][] inner_bins_lambda
 
-        return (inner_new_indexes, inner_new_bins)
+        return (new_indexes, new_bins)
 
       loop_bdy <- mkBodyM stms [subExpRes idxres,subExpRes binsres]
       loop_res <- letTupExp "sorted_is_bins" $ DoLoop loop_vars (ForLoop i2 Int64 bound []) loop_bdy
@@ -851,7 +850,7 @@ diffHist vjops pat@(Pat [pe]) _aux soac m
       let trueSE  = Constant $ IntValue $ intValue Int8 (1 :: Integer)
       let falseSE = Constant $ IntValue $ intValue Int8 (0 :: Integer)
 
-      -- map (\(index) -> if sorted_bins[index] == sorted_bins[index-1] then 0 else 1) iota n'
+      -- final_flags = map (\(index) -> if sorted_bins[index] == sorted_bins[index-1] then 0 else 1) iota n'
       -- Make flag array
       iota_n' <- letExp "iota_n'" $ BasicOp $ Iota n' (intConst Int64 0) (intConst Int64 1) Int64
       bin <- newParam "bin" $ Prim int64
@@ -931,7 +930,7 @@ diffHist vjops pat@(Pat [pe]) _aux soac m
       ris <- eReverse ris_rev
 
       -- Get index of the end of each segment
-      --seg_end_idx = map (\i, bin -> if i == n'-1
+      --scatter_arr = map (\i, bin -> if i == n'-1
       --                              then bin
       --                              else if final_flags[i+1] == 1 
       --                                   then bin
@@ -940,7 +939,7 @@ diffHist vjops pat@(Pat [pe]) _aux soac m
 
       i'' <- newParam "i''" $ Prim int64
       current_bin <- newParam "current_bin" $ Prim int64
-      seg_end_idx_body <- runBodyBuilder . localScope (scopeOfLParams [i'', current_bin]) $ do
+      scatter_arr_body <- runBodyBuilder . localScope (scopeOfLParams [i'', current_bin]) $ do
         idx_plus_one <- letSubExp "idx_plus_one" $ BasicOp $ BinOp (Add Int64 OverflowUndef) (Var $ paramName i'') (intConst Int64 1)
         lastElemIdx <- letExp "lastElemIdx" $ BasicOp $ BinOp (Sub Int64 OverflowUndef) (n') (intConst Int64 1)
 
@@ -971,19 +970,19 @@ diffHist vjops pat@(Pat [pe]) _aux soac m
             )
           ]
 
-      let seg_end_idx_lam = Lambda [i'', current_bin] seg_end_idx_body [Prim int64]
-      seg_end_idx <- letExp "seg_end_idx" $ Op $ Screma n' [iota_n', sorted_bins] $ ScremaForm [][] seg_end_idx_lam
+      let scatter_arr_lam = Lambda [i'', current_bin] scatter_arr_body [Prim int64]
+      scatter_arr <- letExp "scatter_arr" $ Op $ Screma n' [iota_n', sorted_bins] $ ScremaForm [][] scatter_arr_lam
 
-      --bin_lst_lis   = scatter (replicate ne (len hist_orig)) seg_end_idx lis
+      --bin_lst_lis   = scatter (replicate (len hist_orig) ne) scatter_arr lis
       bin_last_lis_dst <- letExp "bin_last_lis_dst" $ BasicOp $ Replicate shape (head nes)
       f''' <- mkIdentityLambda [Prim int64 , t]
-      bin_last_lis <- letExp "bin_last_lis" $ Op $ Scatter n' [seg_end_idx, lis] f''' [(shape, 1, bin_last_lis_dst)]
+      bin_last_lis <- letExp "bin_last_lis" $ Op $ Scatter n' [scatter_arr, lis] f''' [(shape, 1, bin_last_lis_dst)]
 
       -- lis was exc-scan, so we need the last element aswell.
-      -- bin_last_v_dst = scatter (replicate ne (len hist_orig)) seg_end_idx sorted_vals
+      -- bin_last_v_dst = scatter (replicate (len hist_orig) ne) scatter_arr sorted_vals
       bin_last_v_dst <- letExp "bin_last_v_dst" $ BasicOp $ Replicate shape (head nes)
       f'''' <- mkIdentityLambda [Prim int64 , t]
-      bin_last_v <- letExp "bin_last_v" $ Op $ Scatter n' [seg_end_idx, sorted_vals] f'''' [(shape, 1, bin_last_v_dst)]
+      bin_last_v <- letExp "bin_last_v" $ Op $ Scatter n' [scatter_arr, sorted_vals] f'''' [(shape, 1, bin_last_v_dst)]
 
       -- Temp histogram of only our input values.
       -- hist' = map2 lam bin_last_lis bin_last_v
@@ -1040,7 +1039,7 @@ diffHist vjops pat@(Pat [pe]) _aux soac m
       hist_temp_bar      <- letExp "hist_temp_bar" $ Op $ Screma histDim [hist_temp_bar_temp, hist_res_bar] $ ScremaForm [][] mul_hist_temp_res_adj
 
       -- Set adjoint of orig_dst for future use
-      insAdj orig_dst hist_orig_bar
+      void $ insAdj orig_dst hist_orig_bar
 
       -- Now for adjoint of vs
       -- For each bin in sorted_bins we fetch the adjoint of the corresponding bucket in hist_temp_bar
@@ -1065,7 +1064,7 @@ diffHist vjops pat@(Pat [pe]) _aux soac m
       f''''' <- mkIdentityLambda [Prim int64, t]
       vs_bar_contrib <- letExp "vs_bar_contrib" $ Op $ Scatter n' [sorted_is, vs_bar_contrib_reordered] f''''' [(Shape [n], 1, vs_bar_contrib_dst)]
       -- Update the adjoint of vs to be vs_bar_contrib
-      updateAdj vs vs_bar_contrib-- second value here is the contributions, currently not used because it has to be [n] and all we have is [new_length]
+      void $ updateAdj vs vs_bar_contrib
 
 
 
