@@ -46,3 +46,4 @@ core.*
 data/
 lib/
 testparser/
+graphs/

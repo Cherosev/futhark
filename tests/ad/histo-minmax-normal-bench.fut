@@ -13,6 +13,10 @@
 -- random input { [50000000]i64 [50000000]u32 [10]u32 }
 -- random input { [70000000]i64 [70000000]u32 [10]u32 }
 -- random input { [100000000]i64 [100000000]u32 [10]u32 }
+-- random input { [110000000]i64 [110000000]u32 [10]u32 }
+-- random input { [120000000]i64 [120000000]u32 [10]u32 }
+-- random input { [130000000]i64 [130000000]u32 [10]u32 }
+-- random input { [140000000]i64 [140000000]u32 [10]u32 }
 
 let histo_max [w][n] (is: [n]i64) (vs: [n]u32, hist0: [w]u32) : *[w]u32 =
   let hist0' = map2 (*) hist0 hist0
