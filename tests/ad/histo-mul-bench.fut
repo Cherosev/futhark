@@ -14,9 +14,9 @@
 -- random input { [70000000]i64 [70000000]f32 [10]f32 [10]f32 }
 -- random input { [100000000]i64 [100000000]f32 [10]f32 [10]f32 }
 
-
-let histo_plus [w][n] (is: [n]i64) (vs: [n]f32, hist: [w]f32) : [w]f32 =
-  reduce_by_index (copy hist) (+) 0.0f32 is vs
+let histo_mul [w][n] (is: [n]i64) (vs: [n]f32, hist: [w]f32) : [w]f32 =
+  let hist' = map2 (*) hist hist
+  in  reduce_by_index hist' (*) 1.0f32 is vs
 
 entry main [n][w] (is: [n]i64) (vs: [n]f32) (hist: *[w]f32) (hist_bar: [w]f32) =
-  vjp (histo_plus is) (vs,hist) hist_bar
+  vjp (histo_mul is) (vs,hist) hist_bar
