@@ -20,7 +20,8 @@
 
 let histo_mul [w][n] (is: [n]i64) (vs: [n]f32, hist: [w]f32) : [w]f32 =
   let hist' = map2 (*) hist hist
-  in  reduce_by_index hist' (*) 1.0f32 is vs
+  let hist = reduce_by_index hist' (*) 1.0f32 is vs
+  in map2 * hist hist
 
 entry main [n][w] (is: [n]i64) (vs: [n]f32) (hist: *[w]f32) =
   (histo_mul is) (vs,hist)

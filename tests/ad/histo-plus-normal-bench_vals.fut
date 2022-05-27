@@ -20,4 +20,5 @@
 
 
 entry main [n][w] (is: [n]i64) (vs: [n]f32) (hist: *[w]f32) =
-  reduce_by_index (copy hist) (+) 0.0f32 is vs
+  let hist = reduce_by_index (copy hist) (+) 0.0f32 is vs
+  in map2 * hist hist

@@ -20,7 +20,8 @@
 
 let histo_max [w][n] (is: [n]i64) (vs: [n]u32, hist0: [w]u32) : *[w]u32 =
   let hist0' = map2 (*) hist0 hist0
-  in reduce_by_index hist0' (u32.max) (0u32) is vs
+  let hist = reduce_by_index hist0' (u32.max) (0u32) is vs
+  in map2 * hist hist
 
 entry main [n][w] (is: [n]i64) (vs: [n]u32) (hist: [w]u32) (hist_bar: [w]u32) =
   vjp (histo_max is) (vs, hist) hist_bar
