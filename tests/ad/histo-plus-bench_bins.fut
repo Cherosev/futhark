@@ -20,7 +20,8 @@
 
 
 let histo_plus [w][n] (is: [n]i64) (vs: [n]f32, hist: [w]f32) : [w]f32 =
-  reduce_by_index (copy hist) (+) 0.0f32 is vs
+  let hist1 = reduce_by_index (copy hist) (+) 0.0f32 is vs
+  in map2 * hist1 hist1
 
 entry main [n][w] (is: [n]i64) (vs: [n]f32) (hist: *[w]f32) (hist_bar: [w]f32) =
   vjp (histo_plus is) (vs,hist) hist_bar
