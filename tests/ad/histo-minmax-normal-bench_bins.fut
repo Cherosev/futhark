@@ -21,7 +21,7 @@
 let histo_max [w][n] (is: [n]i64) (vs: [n]u32, hist0: [w]u32) : *[w]u32 =
   let hist0' = map2 (*) hist0 hist0
   let hist   = reduce_by_index hist0' (u32.max) (0u32) is vs
-  in  map2 (*) hist (vs[0:w])
+  in  map2 (*) hist (vs[0:1000000])
 
 entry main [n][w] (is: [n]i64) (vs: [n]u32) (hist: [w]u32) =
   (histo_max is) (vs, hist)
