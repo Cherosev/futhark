@@ -22,6 +22,6 @@
 --   reduce_by_index hist0 (u32.max) (0u32) is vs
 
 entry main [n][w] (is: [n]i64) (vs: [n]u32) (hist: [w]u32) =
-  let hist1 = map2 (*) hist0 hist0
+  let hist1 = map2 (*) hist hist
   let hist2 = reduce_by_index hist1 (u32.max) (0u32) is vs
   in map2 (*) hist2 hist2
