@@ -18,9 +18,5 @@
 -- random input { [1000000]i64 [1000000]f32 [130000000]f32 }
 -- random input { [1000000]i64 [1000000]f32 [140000000]f32 }
 
-
-let histo_plus [w][n] (is: [n]i64) (vs: [n]f32, hist: [w]f32) : [w]f32 =
-  reduce_by_index (copy hist) (+) 0.0f32 is vs
-
 entry main [n][w] (is: [n]i64) (vs: [n]f32) (hist: *[w]f32) =
   reduce_by_index (copy hist) (+) 0.0f32 is vs
