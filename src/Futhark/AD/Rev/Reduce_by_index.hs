@@ -511,7 +511,7 @@ diffHist _vjops pat aux soac m
     vs_bar <- letExp (baseString vs ++ "_bar") $ Op $ Screma n [inds] (mapSOAC map_bar_lam)
     void $ updateAdj vs vs_bar
 
--- Special case min/max
+Special case min/max
 diffHist _vjops (Pat [pe]) aux soac m
   | (Hist n [inds, vs] hist_max bucket_fun) <- soac,
     True <- isIdentityLambda bucket_fun,
@@ -584,7 +584,7 @@ diffHist _vjops (Pat [pe]) aux soac m
     insAdj vs vs_bar'
   where
     mkI64ArrType shape = arrayOf (Prim int64) shape NoUniqueness
---special case *
+special case *
 diffHist _vjops (Pat [pe]) aux soac m 
   | (Hist n [inds, vs] hist_mul bucket_fun) <- soac,
     True <- isIdentityLambda bucket_fun,

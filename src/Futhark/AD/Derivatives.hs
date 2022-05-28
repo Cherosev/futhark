@@ -83,15 +83,6 @@ pdBinOp (UDivUp it _) a b =
     derivs x y = (1 `quot` y, negate (x `quot` (y * y)))
 pdBinOp (UMod it _) _ _ = (iConst it 1, iConst it 0) -- FIXME
 pdBinOp (SMod it _) _ _ = (iConst it 1, iConst it 0) -- FIXME
-pdBinOp (SMax it) a b =
-  intBinOp derivs derivs derivs derivs it a b
-  where
-    derivs x y = (fromBoolExp (x .>=. y), fromBoolExp (x .<. y))
-pdBinOp (SMin it) a b =
-  intBinOp derivs derivs derivs derivs it a b
-  where
-    derivs x y = (fromBoolExp (x .<=. y), fromBoolExp (x .>. y))
---
 pdBinOp (Shl it) a b =
   pdBinOp (Mul it OverflowWrap) a $ BinOpExp (Pow it) (iConst it 2) b
 pdBinOp (LShr it) a b =
@@ -101,6 +92,22 @@ pdBinOp (AShr it) a b =
 pdBinOp (And it) _a _b = (iConst it 0, iConst it 0) -- FIXME
 pdBinOp (Or it) _a _b = (iConst it 0, iConst it 0) -- FIXME
 pdBinOp (Xor it) _a _b = (iConst it 0, iConst it 0) -- FIXME
+pdBinOp (UMax it) a b =
+  intBinOp derivs derivs derivs derivs it a b
+  where
+    derivs x y = (fromBoolExp (x .>=. y), fromBoolExp (x .<. y))
+pdBinOp (SMax it) a b =
+  intBinOp derivs derivs derivs derivs it a b
+  where
+    derivs x y = (fromBoolExp (x .>=. y), fromBoolExp (x .<. y))
+pdBinOp (UMin it) a b =
+  intBinOp derivs derivs derivs derivs it a b
+  where
+    derivs x y = (fromBoolExp (x .<=. y), fromBoolExp (x .>. y))
+pdBinOp (SMin it) a b =
+  intBinOp derivs derivs derivs derivs it a b
+  where
+    derivs x y = (fromBoolExp (x .<=. y), fromBoolExp (x .>. y))
 --
 pdBinOp (FAdd ft) _ _ = (fConst ft 1, fConst ft 1)
 pdBinOp (FSub ft) _ _ = (fConst ft 1, fConst ft (-1))
