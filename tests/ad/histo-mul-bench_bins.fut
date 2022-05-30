@@ -19,9 +19,8 @@
 -- random input { [10000000]i64 [10000000]f32 [140000000]f32 [140000000]f32 }
 
 let histo_mul [w][n] (is: [n]i64) (vs: [n]f32, hist: [w]f32) : [w]f32 =
-  let histo1 = map2 (*) hist hist
-  let hist2 = reduce_by_index histo1 (*) 1.0f32 is vs
-  in map2 (*) hist2 hist2
+  let hist1 = reduce_by_index hist (*) 1.0f32 is vs
+  in map (+1) hist1
 
 entry main [n][w] (is: [n]i64) (vs: [n]f32) (hist: *[w]f32) (hist_bar: [w]f32) =
   vjp (histo_mul is) (vs,hist) hist_bar

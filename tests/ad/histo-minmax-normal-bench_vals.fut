@@ -19,6 +19,4 @@
 -- random input { [140000000]i64 [140000000]i64 [10]i64 }
 
 entry main [n][w] (is: [n]i64) (vs: [n]i64) (hist: [w]i64) =
-  let hist1 = map2 (*) hist hist
-  let hist2 = reduce_by_index hist1 (i64.max) (0i64) is vs
-  in map2 (*) hist2 hist2
+  reduce_by_index hist (i64.max) (0i64) is vs
