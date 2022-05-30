@@ -20,7 +20,7 @@
 
 let histo_max [w][n] (is: [n]i64) (vs: [n]i64, hist0: [w]i64) : [w]i64 =
   let hist2 = reduce_by_index (copy hist0) (i64.max) (0i64) is vs
-  in map (*) hist2 hist2
+  in map2 (*) hist2 hist2
 
 entry main [n][w] (is: [n]i64) (vs: [n]i64) (hist: [w]i64) (hist_bar: [w]i64) =
   vjp (histo_max is) (vs, hist) hist_bar
