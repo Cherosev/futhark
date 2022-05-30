@@ -19,4 +19,4 @@
 -- random input { [140000000]i64 [140000000]i64 [10]i64 }
 
 entry main [n][w] (is: [n]i64) (vs: [n]i64) (hist: [w]i64) =
-  reduce_by_index hist (i64.max) (0i64) is vs
+  reduce_by_index (copy hist) (i64.max) (0i64) is vs
