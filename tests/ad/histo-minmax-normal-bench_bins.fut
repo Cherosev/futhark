@@ -20,4 +20,4 @@
 
 
 entry main [n][w] (is: [n]i64) (vs: [n]i64) (hist: [w]i64) =
-  reduce_by_index hist (i64.max) (0i64) is vs
+  reduce_by_index (copy hist) (i64.max) (0i64) is vs
