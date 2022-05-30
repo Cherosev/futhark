@@ -19,5 +19,4 @@
 -- random input { [10000000]i64 [10000000]f32 [140000000]f32 }
 
 entry main [n][w] (is: [n]i64) (vs: [n]f32) (hist: *[w]f32) =
-  let hist1 = reduce_by_index (copy hist) (+) 0.0f32 is vs
-  in map2 (*) hist1 hist1
+  reduce_by_index (copy hist) (+) 0.0f32 is vs
