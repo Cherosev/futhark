@@ -586,122 +586,122 @@ diffHist _vjops (Pat [pe]) aux soac m
     mkI64ArrType shape = arrayOf (Prim int64) shape NoUniqueness
 
     -- special case *
-diffHist _vjops (Pat [pe]) aux soac m 
-  | (Hist n [inds, vs] hist_mul bucket_fun) <- soac,
-    True <- isIdentityLambda bucket_fun,
-    [HistOp shape rf [orig_dst] [ne] mul_lam] <- hist_mul,
-    Just mulop <- isMulLam mul_lam,
-    [eltp] <- lambdaReturnType mul_lam,
-    Prim ptp <- eltp,
-    [shapedim] <- shapeDims shape = do
-    -- starts here:
-    let pe_tp = patElemDec pe
-    (map_lam, _) <- helperMulOp1 ptp mulop
-    vs_lift <- letTupExp "nzel_zrct" $ Op $ Screma n [vs] (ScremaForm [] [] map_lam)
-    let [nzel_zrct, nzel_zrct_flag] = vs_lift
-    zr_counts0 <- letExp "zr_cts" $ BasicOp $ Replicate shape (intConst Int64 0)
-    nz_prods0 <- letExp "nz_prd" $ BasicOp $ Replicate shape ne
-    nz_prods <- newVName "non_zero_prod"
-    zr_counts <- newVName "zero_count"
-    lam_add <- mkLamAddI64
-    let hist_zrn = HistOp shape rf [zr_counts0] [intConst Int64 0] lam_add
-    let hist_nzp = HistOp shape rf [nz_prods0] [ne] mul_lam
-    f' <- mkIdentityLambda [Prim int64, Prim int64, eltp, Prim int64]
-    let soac_pat =
-          Pat
-            [ PatElem nz_prods pe_tp,
-              PatElem zr_counts $
-              arrayOf (Prim int64) shape NoUniqueness
-            ]
-    let soac_exp = Op $ Hist n [inds, inds, nzel_zrct, nzel_zrct_flag] [hist_nzp, hist_zrn] f'
-    auxing aux $ letBind soac_pat soac_exp
-    -- construct the histo result:
-    res_part <- newVName "res_part"
-    ps2 <- zipWithM newParam ["nz_pr", "zr_ct"] [eltp, Prim int64]
-    let [nz_prod, zr_count] = map paramName ps2
-    if_stms <- helperMulOp2 ptp nz_prod zr_count res_part
-    lam_bdy_2 <- runBodyBuilder . localScope (scopeOfLParams ps2) $ do
-      addStms if_stms
-      resultBodyM [Var res_part]
-    hist_temp <-
-      letExp "hist_temp" $
-        Op $
-          Screma
-            shapedim
-            [nz_prods, zr_counts]
-            (ScremaForm [] [] (Lambda ps2 lam_bdy_2 [eltp]))
-    ps3 <- zipWithM newParam ["h_orig", "h_part"] [eltp, eltp]
-    let [ph_orig, ph_part] = map paramName ps3
-    lam_pe_bdy <- runBodyBuilder . localScope (scopeOfLParams ps3) $ do
-      r <- letSubExp "res" $ BasicOp $ BinOp mulop (Var ph_orig) (Var ph_part)
-      resultBodyM [r]
-    auxing aux $
-      letBind (Pat [pe]) $
-        Op $
-          Screma
-            shapedim
-            [orig_dst, hist_temp]
-            (ScremaForm [] [] (Lambda ps3 lam_pe_bdy [eltp]))
-    m
-    -- reverse trace
-    hist_bar <- lookupAdjVal $ patElemName pe
-    -- updates the orig_dst with its proper bar
-    mul_lam' <- renameLambda mul_lam
-    orig_bar <-
-      letExp (baseString orig_dst ++ "_bar") $
-        Op $
-          Screma
-            shapedim
-            [hist_temp, hist_bar]
-            (ScremaForm [] [] mul_lam')
-    updateAdj orig_dst orig_bar
-    -- updates the partial histo result with its proper bar
-    mul_lam'' <- renameLambda mul_lam
-    hist_temp_bar <-
-      letExp (baseString hist_temp ++ "_bar") $
-        Op $
-          Screma
-            shapedim
-            [orig_dst, hist_bar]
-            (ScremaForm [] [] mul_lam'')
-    -- add the contributions to each array element
-    pj <- newParam "j" (Prim int64)
-    pv <- newParam "v" eltp
-    let j = paramName pj
-    ((zr_cts, pr_bar, nz_prd), tmp_stms) <- runBuilderT' . localScope (scopeOfLParams [pj, pv]) $ do
-      zr_cts <- letExp "zr_cts" $ BasicOp $ Index zr_counts $ fullSlice eltp [DimFix (Var j)]
-      pr_bar <- letExp "pr_bar" $ BasicOp $ Index hist_temp_bar $ fullSlice eltp [DimFix (Var j)]
-      nz_prd <- letExp "nz_prd" $ BasicOp $ Index nz_prods $ Slice [DimFix (Var j)]
-      return (zr_cts, pr_bar, nz_prd)
-    bdy_tmp <- helperMulOp3 ptp mulop nz_prd zr_cts pv pr_bar
-    lam_bar <-
-      runBodyBuilder . localScope (scopeOfLParams [pj, pv]) $
-        eBody
-          [ eIf
-              (toExp $ withinBounds [(shapedim, j)])
-              ( do
-                  addStms (tmp_stms <> bodyStms bdy_tmp)
-                  resultBodyM (map resSubExp $ bodyResult bdy_tmp)
-              )
-              (resultBodyM [Constant $ blankPrimValue ptp])
-          ]
-    vs_bar <-
-      letExp (baseString vs ++ "_bar") $
-        Op $
-          Screma
-            n
-            [inds, vs]
-            (ScremaForm [] [] (Lambda [pj, pv] lam_bar [eltp]))
-    updateAdj vs vs_bar
-  where
-    mkLamAddI64 = do
-      pab <- zipWithM newParam ["a", "b"] [Prim int64, Prim int64]
-      let [a, b] = map paramName pab
-      let addop = Add Int64 OverflowUndef
-      lam_bdy <- runBodyBuilder . localScope (scopeOfLParams pab) $ do
-        r <- letSubExp "r" $ BasicOp $ BinOp addop (Var a) (Var b)
-        resultBodyM [r]
-      return $ Lambda pab lam_bdy [Prim int64]
+-- diffHist _vjops (Pat [pe]) aux soac m 
+--   | (Hist n [inds, vs] hist_mul bucket_fun) <- soac,
+--     True <- isIdentityLambda bucket_fun,
+--     [HistOp shape rf [orig_dst] [ne] mul_lam] <- hist_mul,
+--     Just mulop <- isMulLam mul_lam,
+--     [eltp] <- lambdaReturnType mul_lam,
+--     Prim ptp <- eltp,
+--     [shapedim] <- shapeDims shape = do
+--     -- starts here:
+--     let pe_tp = patElemDec pe
+--     (map_lam, _) <- helperMulOp1 ptp mulop
+--     vs_lift <- letTupExp "nzel_zrct" $ Op $ Screma n [vs] (ScremaForm [] [] map_lam)
+--     let [nzel_zrct, nzel_zrct_flag] = vs_lift
+--     zr_counts0 <- letExp "zr_cts" $ BasicOp $ Replicate shape (intConst Int64 0)
+--     nz_prods0 <- letExp "nz_prd" $ BasicOp $ Replicate shape ne
+--     nz_prods <- newVName "non_zero_prod"
+--     zr_counts <- newVName "zero_count"
+--     lam_add <- mkLamAddI64
+--     let hist_zrn = HistOp shape rf [zr_counts0] [intConst Int64 0] lam_add
+--     let hist_nzp = HistOp shape rf [nz_prods0] [ne] mul_lam
+--     f' <- mkIdentityLambda [Prim int64, Prim int64, eltp, Prim int64]
+--     let soac_pat =
+--           Pat
+--             [ PatElem nz_prods pe_tp,
+--               PatElem zr_counts $
+--               arrayOf (Prim int64) shape NoUniqueness
+--             ]
+--     let soac_exp = Op $ Hist n [inds, inds, nzel_zrct, nzel_zrct_flag] [hist_nzp, hist_zrn] f'
+--     auxing aux $ letBind soac_pat soac_exp
+--     -- construct the histo result:
+--     res_part <- newVName "res_part"
+--     ps2 <- zipWithM newParam ["nz_pr", "zr_ct"] [eltp, Prim int64]
+--     let [nz_prod, zr_count] = map paramName ps2
+--     if_stms <- helperMulOp2 ptp nz_prod zr_count res_part
+--     lam_bdy_2 <- runBodyBuilder . localScope (scopeOfLParams ps2) $ do
+--       addStms if_stms
+--       resultBodyM [Var res_part]
+--     hist_temp <-
+--       letExp "hist_temp" $
+--         Op $
+--           Screma
+--             shapedim
+--             [nz_prods, zr_counts]
+--             (ScremaForm [] [] (Lambda ps2 lam_bdy_2 [eltp]))
+--     ps3 <- zipWithM newParam ["h_orig", "h_part"] [eltp, eltp]
+--     let [ph_orig, ph_part] = map paramName ps3
+--     lam_pe_bdy <- runBodyBuilder . localScope (scopeOfLParams ps3) $ do
+--       r <- letSubExp "res" $ BasicOp $ BinOp mulop (Var ph_orig) (Var ph_part)
+--       resultBodyM [r]
+--     auxing aux $
+--       letBind (Pat [pe]) $
+--         Op $
+--           Screma
+--             shapedim
+--             [orig_dst, hist_temp]
+--             (ScremaForm [] [] (Lambda ps3 lam_pe_bdy [eltp]))
+--     m
+--     -- reverse trace
+--     hist_bar <- lookupAdjVal $ patElemName pe
+--     -- updates the orig_dst with its proper bar
+--     mul_lam' <- renameLambda mul_lam
+--     orig_bar <-
+--       letExp (baseString orig_dst ++ "_bar") $
+--         Op $
+--           Screma
+--             shapedim
+--             [hist_temp, hist_bar]
+--             (ScremaForm [] [] mul_lam')
+--     updateAdj orig_dst orig_bar
+--     -- updates the partial histo result with its proper bar
+--     mul_lam'' <- renameLambda mul_lam
+--     hist_temp_bar <-
+--       letExp (baseString hist_temp ++ "_bar") $
+--         Op $
+--           Screma
+--             shapedim
+--             [orig_dst, hist_bar]
+--             (ScremaForm [] [] mul_lam'')
+--     -- add the contributions to each array element
+--     pj <- newParam "j" (Prim int64)
+--     pv <- newParam "v" eltp
+--     let j = paramName pj
+--     ((zr_cts, pr_bar, nz_prd), tmp_stms) <- runBuilderT' . localScope (scopeOfLParams [pj, pv]) $ do
+--       zr_cts <- letExp "zr_cts" $ BasicOp $ Index zr_counts $ fullSlice eltp [DimFix (Var j)]
+--       pr_bar <- letExp "pr_bar" $ BasicOp $ Index hist_temp_bar $ fullSlice eltp [DimFix (Var j)]
+--       nz_prd <- letExp "nz_prd" $ BasicOp $ Index nz_prods $ Slice [DimFix (Var j)]
+--       return (zr_cts, pr_bar, nz_prd)
+--     bdy_tmp <- helperMulOp3 ptp mulop nz_prd zr_cts pv pr_bar
+--     lam_bar <-
+--       runBodyBuilder . localScope (scopeOfLParams [pj, pv]) $
+--         eBody
+--           [ eIf
+--               (toExp $ withinBounds [(shapedim, j)])
+--               ( do
+--                   addStms (tmp_stms <> bodyStms bdy_tmp)
+--                   resultBodyM (map resSubExp $ bodyResult bdy_tmp)
+--               )
+--               (resultBodyM [Constant $ blankPrimValue ptp])
+--           ]
+--     vs_bar <-
+--       letExp (baseString vs ++ "_bar") $
+--         Op $
+--           Screma
+--             n
+--             [inds, vs]
+--             (ScremaForm [] [] (Lambda [pj, pv] lam_bar [eltp]))
+--     updateAdj vs vs_bar
+--   where
+--     mkLamAddI64 = do
+--       pab <- zipWithM newParam ["a", "b"] [Prim int64, Prim int64]
+--       let [a, b] = map paramName pab
+--       let addop = Add Int64 OverflowUndef
+--       lam_bdy <- runBodyBuilder . localScope (scopeOfLParams pab) $ do
+--         r <- letSubExp "r" $ BasicOp $ BinOp addop (Var a) (Var b)
+--         resultBodyM [r]
+--       return $ Lambda pab lam_bdy [Prim int64]
 
 -- General case
 diffHist vjops pat@(Pat [pe]) _aux soac m
