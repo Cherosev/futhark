@@ -6,6 +6,8 @@
 -- compiled input @ histo-mul-bench-data3.txt
 -- compiled input @ histo-mul-bench-data4.txt
 -- compiled input @ histo-mul-bench-data5.txt
+-- compiled input @ histo-mul-bench-data6.txt
+-- compuled input @ histo-mul-bench-data7.txt
 
 
 let histo_mul [w][n] (is: [n]i64) (vs: [n]f32, hist: [w]f32) : [w]f32 =
